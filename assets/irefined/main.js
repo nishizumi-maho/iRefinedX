@@ -4536,9 +4536,36 @@ function BsRegisteredActionText(e = "") {
     "registrato"
   ].some((n) => t === n || t.includes(n));
 }
-function kn() {
-  const e = Qs();
-  return e ? (e.click(), !0) : de.withdraw();
+const IREF_AUTO_CONFIRM_TTL_MS = 3e4;
+function psReadAutoConfirmState() {
+  const e = window.irefAutoConfirmState;
+  return !e || !e.expires_at || e.expires_at <= Date.now() ? (window.irefAutoConfirmState = null, null) : e;
+}
+function psBeginAutoConfirm(e, t = IREF_AUTO_CONFIRM_TTL_MS) {
+  return window.irefAutoConfirmState = {
+    mode: String(e || ""),
+    expires_at: Date.now() + Math.max(5e3, Number(t) || IREF_AUTO_CONFIRM_TTL_MS)
+  }, window.irefAutoConfirmState;
+}
+function psClearAutoConfirm(e = "") {
+  const t = psReadAutoConfirmState();
+  (!t || e && t.mode !== e) || (window.irefAutoConfirmState = null);
+}
+function psScheduleAutoConfirmClear(e = "", t = 5e3) {
+  e && window.setTimeout(() => {
+    psClearAutoConfirm(e);
+  }, Math.max(1e3, Number(t) || 5e3));
+}
+function psHasAutoConfirmMode(e) {
+  const t = psReadAutoConfirmState();
+  return !!t && (t.mode === e || t.mode === "register-flow" && (e === "register" || e === "withdraw"));
+}
+function kn(e = {}) {
+  const { preferDirect: t = !1 } = e;
+  if (t)
+    return de.withdraw();
+  const n = Qs();
+  return n ? (n.click(), !0) : de.withdraw();
 }
 function Ce(e) {
   var n;
@@ -4564,8 +4591,9 @@ function sendNativeRegister(e) {
   const t = registerActionEntry(e);
   return !t || t.button.disabled ? !1 : Xc(t.button);
 }
-function sendRegister(e) {
-  return sendNativeRegister(e) ? !0 : !de.isReady() ? (b("🚫 Cannot register yet because the iRacing websocket is offline"), window.alert(S("register.websocket_not_ready")), !1) : de.register(
+function sendRegister(e, t = {}) {
+  const { preferDirect: n = !1 } = t;
+  return !n && sendNativeRegister(e) ? !0 : !de.isReady() ? (b("🚫 Cannot register yet because the iRacing websocket is offline"), window.alert(S("register.websocket_not_ready")), !1) : de.register(
     e.season_name,
     e.car_id,
     e.car_class_id,
@@ -5148,9 +5176,12 @@ function cr(e, t = {}, n = {}, i = {}) {
   const {
     registerDelayMs: s = 5e3,
     retryWithdrawBeforeRegister: r = !1,
-    withdrawRetryDelayMs: a = Ns
+    withdrawRetryDelayMs: a = Ns,
+    preferDirect: o = !1,
+    autoConfirmMode: c = ""
   } = i;
-  const o = be(), c = r || ot(o) && !Kt(o, e), u = c ? Math.max(s, a + 2e3) : s;
+  c && psBeginAutoConfirm(c);
+  const u = be(), l = r || ot(u) && !Kt(u, e), f = l ? Math.max(s, a + 2e3) : s;
   Ot({
     ...e,
     status: "registering",
@@ -5158,19 +5189,19 @@ function cr(e, t = {}, n = {}, i = {}) {
     registered_at: null,
     requested_at: (/* @__PURE__ */ new Date()).toISOString()
   });
-  const l = () => {
-    const f = Date.now(), d = () => {
+  const d = () => {
+    const m = Date.now(), T = () => {
       var h, w;
-      if (c && psNativeRegisteredElsewhere(e)) {
-        if (Date.now() - f > PS_REGISTERING_TIMEOUT_MS) {
-          Se(), (h = n.onWithdrawFailed) == null || h.call(n), b(t.withdrawError || "🚫 Could not send the withdraw request");
+      if (l && psNativeRegisteredElsewhere(e)) {
+        if (Date.now() - m > PS_REGISTERING_TIMEOUT_MS) {
+          c && psScheduleAutoConfirmClear(c, 2e3), Se(), (h = n.onWithdrawFailed) == null || h.call(n), b(t.withdrawError || "🚫 Could not send the withdraw request");
           return;
         }
-        kn() && b(t.withdrawRetry || "🔁 Retrying withdraw before register"), window.setTimeout(d, Math.max(1e3, a));
+        kn({ preferDirect: o }) && b(t.withdrawRetry || "🔁 Retrying withdraw before register"), window.setTimeout(T, Math.max(1e3, a));
         return;
       }
-      if (!sendRegister(e)) {
-        Se(), (h = n.onRegisterFailed) == null || h.call(n), b(t.registerError || "🚫 Could not send the register request");
+      if (!sendRegister(e, { preferDirect: o })) {
+        c && psScheduleAutoConfirmClear(c, 2e3), Se(), (h = n.onRegisterFailed) == null || h.call(n), b(t.registerError || "🚫 Could not send the register request");
         return;
       }
       Ot({
@@ -5179,28 +5210,34 @@ function cr(e, t = {}, n = {}, i = {}) {
         confirmed_by_site: !1,
         registered_at: (/* @__PURE__ */ new Date()).toISOString(),
         requested_at: (/* @__PURE__ */ new Date()).toISOString()
-      }), (w = n.onRegistered) == null || w.call(n), b(t.registered || `✅ Sent register request for ${e.season_name}`);
+      }), c && psScheduleAutoConfirmClear(c, 5e3), (w = n.onRegistered) == null || w.call(n), b(t.registered || `✅ Sent register request for ${e.season_name}`);
     };
-    c && window.setTimeout(() => {
+    l && window.setTimeout(() => {
       const h = be();
-      !h || h.status !== "registering" || kn() && b(t.withdrawRetry || "🔁 Retrying withdraw before register");
-    }, a), window.setTimeout(d, u);
+      !h || h.status !== "registering" || kn({ preferDirect: o }) && b(t.withdrawRetry || "🔁 Retrying withdraw before register");
+    }, a), window.setTimeout(T, f);
     return !0;
   };
-  if (!c)
-    return l();
-  return kn() ? l() : (Se(), (g = n.onWithdrawFailed) == null || g.call(n), b(t.withdrawError || "🚫 Could not send the withdraw request"), !1);
+  if (!l)
+    return d();
+  return kn({ preferDirect: o }) ? d() : (c && psClearAutoConfirm(c), Se(), (g = n.onWithdrawFailed) == null || g.call(n), b(t.withdrawError || "🚫 Could not send the withdraw request"), !1);
 }
-function Rc(e, t) {
-  var n;
+function Rc(e, t, n = {}) {
+  var a;
+  const i = n.preferDirect !== !1, s = n.autoConfirmMode || (i ? "register-flow" : "");
   return Ls(), xe(e) ? cr(
     Ec(e, t),
     {
       withdrawError: "🚫 Could not start the direct register flow",
       registerError: "🚫 Could not finish the direct register flow",
       registered: `✅ Sent direct register request for ${_e(
-        ((n = e.session) == null ? void 0 : n.season_name) || ""
+        ((a = e.session) == null ? void 0 : a.season_name) || ""
       )}`
+    },
+    {},
+    {
+      preferDirect: i,
+      autoConfirmMode: s
     }
   ) : (b("🚫 This page did not expose a registerable session id yet"), !1);
 }
@@ -5221,8 +5258,12 @@ function Tc() {
     de.refreshNow(), Nt();
   }, 3500);
 }
-function lr() {
-  return kn() ? (Se(), Ko(), Nc("register"), Nt(), Tc(), b("✅ Sent withdraw request"), !0) : (b("🚫 Could not send the withdraw request"), !1);
+function lr(e = {}) {
+  const {
+    preferDirect: t = !0,
+    autoConfirmMode: n = t ? "withdraw" : ""
+  } = e;
+  return n && psBeginAutoConfirm(n, 8e3), kn({ preferDirect: t }) ? (n && psScheduleAutoConfirmClear(n, 5e3), Se(), Ko(), Nc("register"), Nt(), Tc(), b("✅ Sent withdraw request"), !0) : (n && psClearAutoConfirm(n), b("🚫 Could not send the withdraw request"), !1);
 }
 let withdrawClickSyncInstalled = !1;
 function onNativeWithdrawClick(e) {
@@ -5238,7 +5279,10 @@ function ensureWithdrawClickSync() {
   withdrawClickSyncInstalled || (document.addEventListener("click", onNativeWithdrawClick, !0), withdrawClickSyncInstalled = !0);
 }
 function zc() {
-  return lr();
+  return lr({
+    preferDirect: !0,
+    autoConfirmMode: "withdraw"
+  });
 }
 function Xn(e, t) {
   zc() && (t.dataset.irefRegistrationMode = "register", Jt(e, "register", null, !0));
@@ -5260,7 +5304,10 @@ function ur(e, t, n, i) {
     tr(e, n == null ? void 0 : n.contentId);
     return;
   }
-  Rc(i || n, r) && (t.dataset.irefRegistrationMode = "withdraw", Jt(e, "withdraw", { status: "registering" }, !0));
+  Rc(i || n, r, {
+    preferDirect: !0,
+    autoConfirmMode: "register-flow"
+  }) && (t.dataset.irefRegistrationMode = "withdraw", Jt(e, "withdraw", { status: "registering" }, !0));
 }
 function Dc(e, t, n) {
   const i = t.querySelector(
@@ -5497,7 +5544,9 @@ function Yt(e, t = {}) {
     {
       retryWithdrawBeforeRegister: ot(o) && !Kt(o, a),
       withdrawRetryDelayMs: Ns,
-      registerDelayMs: Oo
+      registerDelayMs: Oo,
+      preferDirect: !0,
+      autoConfirmMode: "register-flow"
     }
   );
 }
@@ -6535,26 +6584,34 @@ async function Il(e = !0) {
 const Ir = "auto-close-toasts", Ol = "iref-" + Ir;
 L.add(Ir, !0, Lr, Ol, Il);
 function autoConfirmRegisterDialog() {
-  const e = [...document.querySelectorAll('[role="dialog"], .chakra-modal__content, .modal-content')].find((n) => {
-    if (!Ht(n))
-      return !1;
-    const i = Xe(n.innerText || "");
-    return i.includes("continue to register") || i.includes("show me this again") || i.includes("join button will appear in a green bar above");
-  });
-  if (!e)
+  const e = psHasAutoConfirmMode("register"), t = psHasAutoConfirmMode("withdraw");
+  if (!e && !t)
     return !1;
-  const t = [...e.querySelectorAll("label, button, span, div")].find(
-    (n) => Xe(n.textContent || "").includes("show me this again")
-  );
-  if (t) {
-    const n = t.closest("label, button, [role='switch']") || t.parentElement, i = (n == null ? void 0 : n.querySelector('input[type="checkbox"]')) || (n == null ? void 0 : n.querySelector("[role='switch']")) || n;
-    const s = !!((i == null ? void 0 : i.checked) === !0 || (i == null ? void 0 : i.getAttribute) && i.getAttribute("aria-checked") === "true");
-    !s && n && typeof n.click == "function" && n.click();
+  const n = [...document.querySelectorAll('[role="dialog"], .chakra-modal__content, .modal-content')].find((o) => {
+    if (!Ht(o))
+      return !1;
+    const c = Xe(o.innerText || "");
+    return e && (c.includes("continue to register") || c.includes("show me this again") || c.includes("join button will appear in a green bar above")) || t && (c.includes("withdraw") || c.includes("cancel registration") || c.includes("cancelar registro") || c.includes("cancelar registo"));
+  });
+  if (!n)
+    return !1;
+  if (e) {
+    const o = [...n.querySelectorAll("label, button, span, div")].find(
+      (c) => Xe(c.textContent || "").includes("show me this again")
+    );
+    if (o) {
+      const c = o.closest("label, button, [role='switch']") || o.parentElement, u = (c == null ? void 0 : c.querySelector('input[type="checkbox"]')) || (c == null ? void 0 : c.querySelector("[role='switch']")) || c;
+      const l = !!((u == null ? void 0 : u.checked) === !0 || (u == null ? void 0 : u.getAttribute) && u.getAttribute("aria-checked") === "true");
+      !l && c && typeof c.click == "function" && c.click();
+    }
   }
-  const n = [...e.querySelectorAll("button, a")].find(
-    (i) => Ht(i) && Xe(i.innerText || i.textContent || "") === "continue"
+  const i = [...n.querySelectorAll("button, a")].find(
+    (o) => {
+      const c = Xe(o.innerText || o.textContent || "");
+      return Ht(o) && (e && c === "continue" || t && BsWithdrawActionText(c));
+    }
   );
-  return !n || n.dataset.irefAutoConfirm === "1" ? !1 : (n.dataset.irefAutoConfirm = "1", Xc(n), !0);
+  return !i || i.dataset.irefAutoConfirm === "1" ? !1 : (i.dataset.irefAutoConfirm = "1", Xc(i), !0);
 }
 const Xt = "#test-drive-modal";
 function Bl() {

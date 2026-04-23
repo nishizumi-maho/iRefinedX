@@ -1,7 +1,7 @@
 {
   "name": "irefinedx",
   "productName": "iRefinedX",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A Windows launcher that embeds the official iRacing UI with the iRefinedX enhancement layer.",
   "main": "main.js",
   "author": "Maho Nishizumi",
