@@ -1,0 +1,93 @@
+{
+  "name": "irefinedx",
+  "productName": "iRefinedX",
+  "version": "1.0.0",
+  "description": "A Windows launcher that embeds the official iRacing UI with the iRefinedX enhancement layer.",
+  "main": "main.js",
+  "author": "Maho Nishizumi",
+  "license": "MIT",
+  "private": false,
+  "homepage": "https://github.com/nishizumi-maho/iRefinedX",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nishizumi-maho/iRefinedX.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nishizumi-maho/iRefinedX/issues"
+  },
+  "scripts": {
+    "start": "electron .",
+    "pack:dir": "electron-builder --win dir",
+    "dist:win": "electron-builder --win nsis",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.nishizumi-maho.irefinedx",
+    "productName": "iRefinedX",
+    "artifactName": "IRX-${version}-${arch}.${ext}",
+    "copyright": "Copyright © 2026 Maho Nishizumi",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "native-iracing.js",
+      "local-iracing.js",
+      "assets/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/koffi/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "nishizumi-maho",
+        "repo": "iRefinedX"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "executableName": "IRX",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "perMachine": false,
+      "guid": "0fc8b827-86f6-4202-a7c3-a9f0cf2821bd",
+      "installerLanguages": [
+        "en_US"
+      ],
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "runAfterFinish": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "shortcutName": "iRefinedX",
+      "uninstallDisplayName": "iRefinedX",
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
+    }
+  },
+  "dependencies": {
+    "koffi": "^2.16.1"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1",
+    "playwright": "^1.59.1"
+  }
+}

@@ -1,0 +1,7 @@
+* [Home](Home.md)
+* [Installation and Updates](Installation-and-Updates.md)
+* [Using iRefinedX](Using-iRefinedX.md)
+* [Session Queue and Registration](Session-Queue-and-Registration.md)
+* [League and Hosted Tools](League-and-Hosted-Tools.md)
+* [Architecture](Architecture.md)
+* [Troubleshooting](Troubleshooting.md)
