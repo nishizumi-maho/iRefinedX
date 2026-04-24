@@ -494,6 +494,7 @@ function getRuntimeProbeScript() {
   window.__irefinedProbeInstalled = true;
 
   const prefix = ${JSON.stringify(PROBE_PREFIX)};
+  const enableVerboseNetworkLogs = ${JSON.stringify(ENABLE_VERBOSE_NETWORK_LOGS)};
   const windowControlsStyleId = "iref-window-controls-no-drag";
 
   function trimPayload(value) {
@@ -772,7 +773,7 @@ function getRuntimeProbeScript() {
       const targetUrl = String(url);
       emit("ws-open", { url: targetUrl });
 
-      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+      if (enableVerboseNetworkLogs) {
         socket.addEventListener("message", (event) => {
           emit("ws-message", {
             url: targetUrl,
@@ -795,7 +796,7 @@ function getRuntimeProbeScript() {
         emit("ws-error", { url: targetUrl });
       });
 
-      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+      if (enableVerboseNetworkLogs) {
         const nativeSend = socket.send;
         socket.send = function(data) {
           emit("ws-message", {
@@ -826,7 +827,7 @@ function getRuntimeProbeScript() {
         (input && input.method) ||
         "GET";
 
-      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+      if (enableVerboseNetworkLogs) {
         emit("fetch", {
           phase: "request",
           method: requestMethod,
@@ -836,7 +837,7 @@ function getRuntimeProbeScript() {
 
       const response = await nativeFetch.apply(this, arguments);
 
-      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+      if (enableVerboseNetworkLogs) {
         emit("fetch", {
           phase: "response",
           method: requestMethod,
@@ -865,7 +866,7 @@ function getRuntimeProbeScript() {
     window.XMLHttpRequest.prototype.send = function(body) {
       const meta = this.__irefinedMeta || {};
 
-      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+      if (enableVerboseNetworkLogs) {
         emit("xhr", {
           phase: "request",
           method: meta.method || "GET",
@@ -875,7 +876,7 @@ function getRuntimeProbeScript() {
       }
 
       this.addEventListener("load", () => {
-        if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        if (enableVerboseNetworkLogs) {
           emit("xhr", {
             phase: "response",
             method: meta.method || "GET",
@@ -886,7 +887,7 @@ function getRuntimeProbeScript() {
       });
 
       this.addEventListener("error", () => {
-        if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        if (enableVerboseNetworkLogs) {
           emit("xhr", {
             phase: "error",
             method: meta.method || "GET",
