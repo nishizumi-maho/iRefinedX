@@ -2,7 +2,15 @@ const fs = require("node:fs");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
-const { app, session, ipcMain, BrowserWindow, dialog, shell } = require("electron");
+const {
+  app,
+  session,
+  ipcMain,
+  BrowserWindow,
+  dialog,
+  shell,
+  powerSaveBlocker,
+} = require("electron");
 
 const ROOT_DIR = process.env.IREFINED_ROOT || "__IREFINED_ROOT__";
 const ROOT_POINTS_TO_ASAR = /(?:^|[\\/])[^\\/]+\.asar(?:$|[\\/])/i.test(ROOT_DIR);
@@ -21,7 +29,7 @@ const IREF_MODE = process.env.IREF_MODE || "fallback";
 const IREF_NAV_TARGET = process.env.IREF_NAV_TARGET || "";
 const DESKTOP_PACKAGE = readJsonFile(DESKTOP_PACKAGE_PATH, {});
 const APP_NAME = DESKTOP_PACKAGE.productName || "iRefinedX";
-const APP_VERSION = DESKTOP_PACKAGE.version || "1.2.0";
+const APP_VERSION = DESKTOP_PACKAGE.version || "1.3.0";
 const APP_DISPLAY_VERSION =
   DESKTOP_PACKAGE.displayVersion || `v${String(APP_VERSION).split(".")[0]}`;
 const APP_RELEASE_CHANNEL =
@@ -50,7 +58,10 @@ const BACKGROUND_RUNTIME_SWITCHES = [
 
 const injectedFallbackTargets = new Set();
 const autoNavigatedTargets = new Set();
+const instrumentedWindows = new WeakSet();
 let desktopUpdateCheckStarted = false;
+let runtimePowerSaveBlockerId = -1;
+let rendererWakeIntervalId = 0;
 
 for (const runtimeSwitch of BACKGROUND_RUNTIME_SWITCHES) {
   app.commandLine.appendSwitch(runtimeSwitch);
@@ -101,6 +112,124 @@ function onElectronReady(handler) {
   }
 
   app.on("ready", handler);
+}
+
+function ensureRuntimePowerSaveBlocker() {
+  if (!powerSaveBlocker || typeof powerSaveBlocker.start !== "function") {
+    return;
+  }
+
+  if (
+    runtimePowerSaveBlockerId !== -1 &&
+    typeof powerSaveBlocker.isStarted === "function" &&
+    powerSaveBlocker.isStarted(runtimePowerSaveBlockerId)
+  ) {
+    return;
+  }
+
+  try {
+    runtimePowerSaveBlockerId = powerSaveBlocker.start("prevent-app-suspension");
+    writeLog("power-save-blocker-started", {
+      id: runtimePowerSaveBlockerId,
+      type: "prevent-app-suspension",
+    });
+  } catch (error) {
+    writeLog("power-save-blocker-start-failed", {
+      error: serializeError(error),
+    });
+  }
+}
+
+function stopRuntimePowerSaveBlocker() {
+  if (
+    runtimePowerSaveBlockerId === -1 ||
+    !powerSaveBlocker ||
+    typeof powerSaveBlocker.stop !== "function"
+  ) {
+    return;
+  }
+
+  try {
+    if (
+      typeof powerSaveBlocker.isStarted !== "function" ||
+      powerSaveBlocker.isStarted(runtimePowerSaveBlockerId)
+    ) {
+      powerSaveBlocker.stop(runtimePowerSaveBlockerId);
+      writeLog("power-save-blocker-stopped", {
+        id: runtimePowerSaveBlockerId,
+      });
+    }
+  } catch (error) {
+    writeLog("power-save-blocker-stop-failed", {
+      id: runtimePowerSaveBlockerId,
+      error: serializeError(error),
+    });
+  } finally {
+    runtimePowerSaveBlockerId = -1;
+  }
+}
+
+function dispatchRendererBackgroundTick(window) {
+  if (!window || window.isDestroyed()) {
+    return;
+  }
+
+  const { webContents } = window;
+
+  if (!webContents || webContents.isDestroyed()) {
+    return;
+  }
+
+  const currentUrl =
+    typeof webContents.getURL === "function" ? String(webContents.getURL() || "") : "";
+
+  if (!/members-ng\.iracing\.com/i.test(currentUrl)) {
+    return;
+  }
+
+  webContents
+    .executeJavaScript(
+      `(() => {
+        try {
+          if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+            window.dispatchEvent(
+              new CustomEvent("iref-background-tick", {
+                detail: {
+                  ts: Date.now(),
+                  href: location.href,
+                  hidden: document.hidden === true,
+                  hasFocus:
+                    typeof document.hasFocus === "function" ? document.hasFocus() : null,
+                },
+              })
+            );
+          }
+        } catch {}
+      })();`,
+      true
+    )
+    .catch(() => {});
+}
+
+function ensureRendererWakeInterval() {
+  if (rendererWakeIntervalId) {
+    return;
+  }
+
+  rendererWakeIntervalId = setInterval(() => {
+    BrowserWindow.getAllWindows().forEach((window) => {
+      dispatchRendererBackgroundTick(window);
+    });
+  }, 1000);
+}
+
+function stopRendererWakeInterval() {
+  if (!rendererWakeIntervalId) {
+    return;
+  }
+
+  clearInterval(rendererWakeIntervalId);
+  rendererWakeIntervalId = 0;
 }
 
 function getRepositorySlug(value) {
@@ -1228,6 +1357,11 @@ function installWindowInteropHandlers() {
 }
 
 function instrumentWindow(window) {
+  if (!window || window.isDestroyed() || instrumentedWindows.has(window)) {
+    return;
+  }
+
+  instrumentedWindows.add(window);
   const { webContents } = window;
 
   if (typeof webContents.setBackgroundThrottling === "function") {
@@ -1323,7 +1457,12 @@ function installReadyHooks() {
 
   onElectronReady(() => {
     ensureLogDir();
+    ensureRuntimePowerSaveBlocker();
+    ensureRendererWakeInterval();
     installSessionInstrumentation(session.defaultSession);
+    BrowserWindow.getAllWindows().forEach((window) => {
+      instrumentWindow(window);
+    });
     setTimeout(() => {
       void checkForDesktopUpdates();
     }, UPDATE_CHECK_DELAY_MS);
@@ -1342,6 +1481,11 @@ function installReadyHooks() {
 
   app.on("browser-window-created", (_event, window) => {
     instrumentWindow(window);
+  });
+
+  app.on("will-quit", () => {
+    stopRendererWakeInterval();
+    stopRuntimePowerSaveBlocker();
   });
 }
 

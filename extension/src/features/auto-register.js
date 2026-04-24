@@ -30,6 +30,7 @@ const optimisticWithdrawWindowMs = 15 * 1000;
 const nativeConfirmationArmWindowMs = 15 * 1000;
 const pendingRegistrationTimeoutMs = 45 * 1000;
 const pendingRegistrationRefreshIntervalMs = 5000;
+const queueAutomationTickMinIntervalMs = 700;
 const raceEventType = 5;
 const qualifyEventType = 3;
 const practiceEventType = 2;
@@ -1158,7 +1159,32 @@ function clickActionElement(el) {
     return false;
   }
 
-  el.click();
+  try {
+    el.focus?.({ preventScroll: true });
+  } catch {}
+
+  const dispatchMouseEvent = (type) => {
+    try {
+      el.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          view: window,
+        })
+      );
+    } catch {}
+  };
+
+  dispatchMouseEvent("mousedown");
+  dispatchMouseEvent("mouseup");
+
+  try {
+    el.click();
+  } catch {
+    return false;
+  }
+
   return true;
 }
 
@@ -1210,15 +1236,74 @@ function getNativeConfirmationLabels(kind = "generic") {
   };
 }
 
-function getVisibleActionButtons(root = document) {
+function isUiInteractionBackgrounded() {
+  if (typeof document === "undefined") {
+    return false;
+  }
+
+  try {
+    return document.hidden || document.hasFocus?.() === false;
+  } catch {
+    return document.hidden === true;
+  }
+}
+
+function isHiddenByStyleOrAttribute(el) {
+  if (!el) {
+    return true;
+  }
+
+  const hasHiddenAttribute =
+    typeof el.getAttribute === "function" && el.getAttribute("hidden") !== null;
+  const isAriaHidden =
+    typeof el.getAttribute === "function" && el.getAttribute("aria-hidden") === "true";
+
+  if (
+    el.hidden === true ||
+    hasHiddenAttribute ||
+    isAriaHidden
+  ) {
+    return true;
+  }
+
+  try {
+    const style = window.getComputedStyle?.(el);
+
+    if (!style) {
+      return false;
+    }
+
+    return style.display === "none" || style.visibility === "hidden";
+  } catch {
+    return false;
+  }
+}
+
+function isActionElementAvailable(el, options = {}) {
+  const { allowOccluded = false } = options;
+
+  if (!el || !el.isConnected || el.closest("#iref-ui-root")) {
+    return false;
+  }
+
+  if (isElementDisabled(el) || isHiddenByStyleOrAttribute(el)) {
+    return false;
+  }
+
+  return allowOccluded ? true : isVisible(el);
+}
+
+function getActionButtons(root = document, options = {}) {
+  const { allowOccluded = false } = options;
+
   return [...root.querySelectorAll("button, a, [role='button']")]
-    .filter((el) => !el.closest("#iref-ui-root"))
-    .filter((el) => isVisible(el))
-    .filter((el) => !isElementDisabled(el))
+    .filter((el) => isActionElementAvailable(el, { allowOccluded }))
     .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
 }
 
-function getDialogContext(node) {
+function getDialogContext(node, options = {}) {
+  const { allowOccluded = false } = options;
+
   return findClosest(node, (candidate) => {
     if (!candidate || candidate === document.body || candidate === document.documentElement) {
       return false;
@@ -1228,7 +1313,11 @@ function getDialogContext(node) {
       return false;
     }
 
-    if (!isVisible(candidate)) {
+    if (isHiddenByStyleOrAttribute(candidate)) {
+      return false;
+    }
+
+    if (!allowOccluded && !isVisible(candidate)) {
       return false;
     }
 
@@ -1266,10 +1355,11 @@ function tryAutoConfirmNativePrompt() {
   const { actionLabels, primaryLabels } = getNativeConfirmationLabels(
     confirmationState.kind
   );
-  const candidates = getVisibleActionButtons()
+  const allowOccluded = isUiInteractionBackgrounded();
+  const candidates = getActionButtons(document, { allowOccluded })
     .map((button) => {
       const label = normalizeText(button.innerText || button.textContent || "");
-      const dialog = getDialogContext(button);
+      const dialog = getDialogContext(button, { allowOccluded });
 
       if (!dialog) {
         return null;
@@ -1327,6 +1417,58 @@ function tryAutoConfirmNativePrompt() {
   }
 
   return clicked;
+}
+
+function runQueueAutomationTick(reason = "interval") {
+  const now = Date.now();
+  const lastTickAt = Number(window.irefLastQueueAutomationTickAt) || 0;
+
+  if (now - lastTickAt < queueAutomationTickMinIntervalMs) {
+    return false;
+  }
+
+  window.irefLastQueueAutomationTickAt = now;
+  window.irefLastQueueAutomationTickReason = reason;
+
+  tryAutoConfirmNativePrompt();
+
+  const queue = cleanupQueue();
+  const currentRegistrationState = getRegistrationState();
+
+  if (queue.length !== ensureWatchQueue().length) {
+    setWatchQueue(queue);
+  }
+
+  if (shouldMaintainQueueSocket(queue, currentRegistrationState)) {
+    ws.ensureReady({
+      reason: document.hidden ? `${reason}-hidden` : reason,
+      refresh: true,
+    });
+  }
+
+  maybeRefreshPendingRegistrationProgress(currentRegistrationState);
+  maybeRefreshPendingWithdrawProgress();
+
+  ensureWatchQueue().forEach((queueItem, queueIndex) => {
+    if (recoverStaleQueueItem(queueItem, currentRegistrationState)) {
+      return;
+    }
+
+    if (queueItem.status === "queued" && queueItem.session_id) {
+      updateQueueReadiness(queueItem);
+    }
+
+    if (
+      queueItem.auto_register_armed !== false &&
+      queueItem.status === "found" &&
+      canQueueItemRegisterNow(queueItem) &&
+      isInsideQueueRegisterWindow(queueItem.start_time)
+    ) {
+      activateQueueItem(queueIndex, { manual: false });
+    }
+  });
+
+  return true;
 }
 
 function detectNativeActionKind(button) {
@@ -2610,6 +2752,11 @@ function startRegistrationFlow(registrationState, labels = {}, handlers = {}, op
     withdrawRetryDelayMs = queueWithdrawRetryDelayMs,
   } = options;
 
+  ws.ensureReady({
+    reason: "start-registration-flow",
+    refresh: false,
+  });
+
   if (!ws.isReady()) {
     log("🚫 Cannot register yet because the iRacing websocket is offline");
     window.alert("The iRacing websocket is not ready yet.");
@@ -3061,6 +3208,21 @@ function canAttemptRegistration(queueItem) {
   return startTime >= getCurrentTime() - autoRegisterGraceMs;
 }
 
+function shouldMaintainQueueSocket(queue = ensureWatchQueue(), currentRegistrationState = getRegistrationState()) {
+  if (hasActiveRegistration(currentRegistrationState) || isCurrentPageWithdrawPending()) {
+    return true;
+  }
+
+  return queue.some(
+    (queueItem) =>
+      queueItem &&
+      queueItem.auto_register_armed !== false &&
+      (queueItem.status === "queued" ||
+        queueItem.status === "found" ||
+        queueItem.status === "registering")
+  );
+}
+
 export function activateQueueItem(queueIndex, options = {}) {
   const { manual = false, allowQueued = false } = options;
   const queueItem = ensureWatchQueue()[queueIndex];
@@ -3083,6 +3245,11 @@ export function activateQueueItem(queueIndex, options = {}) {
     removeQueueItem(queueItem);
     return;
   }
+
+  ws.ensureReady({
+    reason: manual ? "manual-queue-activate" : "auto-queue-activate",
+    refresh: false,
+  });
 
   if (!ws.isReady()) {
     log("🚫 Queue paused because the iRacing websocket is not ready");
@@ -3182,34 +3349,7 @@ if (!ws.callbacks.includes(wsCallback)) {
 }
 
 window.setInterval(() => {
-  const queue = cleanupQueue();
-  const currentRegistrationState = getRegistrationState();
-
-  if (queue.length !== ensureWatchQueue().length) {
-    setWatchQueue(queue);
-  }
-
-  maybeRefreshPendingRegistrationProgress(currentRegistrationState);
-  maybeRefreshPendingWithdrawProgress();
-
-  ensureWatchQueue().forEach((queueItem, queueIndex) => {
-    if (recoverStaleQueueItem(queueItem, currentRegistrationState)) {
-      return;
-    }
-
-    if (queueItem.status === "queued" && queueItem.session_id) {
-      updateQueueReadiness(queueItem);
-    }
-
-    if (
-      queueItem.auto_register_armed !== false &&
-      queueItem.status === "found" &&
-      canQueueItemRegisterNow(queueItem) &&
-      isInsideQueueRegisterWindow(queueItem.start_time)
-    ) {
-      activateQueueItem(queueIndex, { manual: false });
-    }
-  });
+  runQueueAutomationTick("queue-watchdog");
 }, 1000);
 
 async function init(activate = true) {
@@ -3223,6 +3363,13 @@ async function init(activate = true) {
   loadRegistrationState();
   initSoundSupport();
   installNativeActionInterceptors();
+
+  if (!window.__irefBackgroundTickHandlerInstalled) {
+    window.addEventListener("iref-background-tick", () => {
+      runQueueAutomationTick("main-process-tick");
+    });
+    window.__irefBackgroundTickHandlerInstalled = true;
+  }
 
   persistInterval = window.setInterval(() => {
     tryAutoConfirmNativePrompt();
