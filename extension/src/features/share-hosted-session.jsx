@@ -99,12 +99,12 @@ function stripSessionForExport(session = {}) {
   return exportedSession;
 }
 
-function exportWeather(component) {
+async function exportWeather(component) {
   const session = component?.state?.session;
   const sessionName = session?.session_name || "hosted-session";
   const filename = `${slugify(sessionName)}-weather.json`;
 
-  downloadJson(filename, {
+  const result = await downloadJson(filename, {
     exportType: "irefined-weather",
     exportedAt: new Date().toISOString(),
     url: location.href,
@@ -113,15 +113,17 @@ function exportWeather(component) {
     weather: cloneJsonSafe(session?.weather || {}, {}),
   });
 
-  log(`Downloaded ${filename}`);
+  if (result?.saved) {
+    log(`Downloaded ${filename}`);
+  }
 }
 
-function exportSession(component) {
+async function exportSession(component) {
   const session = component?.state?.session;
   const sessionName = session?.session_name || "hosted-session";
   const filename = `${slugify(sessionName)}-session.json`;
 
-  downloadJson(filename, {
+  const result = await downloadJson(filename, {
     exportType: "irefined-session",
     exportedAt: new Date().toISOString(),
     url: location.href,
@@ -135,7 +137,9 @@ function exportSession(component) {
     trackState: cloneJsonSafe(session?.track_state || {}, {}),
   });
 
-  log(`Downloaded ${filename}`);
+  if (result?.saved) {
+    log(`Downloaded ${filename}`);
+  }
 }
 
 function resolveImportedSession(payload) {

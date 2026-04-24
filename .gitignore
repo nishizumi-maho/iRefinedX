@@ -5,6 +5,13 @@ dist/
 output/
 .playwright-cli/
 release/
+logs/
+.analysis/
+desktop/runlogs/
+desktop/runtime/
+desktop/dist/
+desktop/extension/
+desktop/legal/
 
 target
 Cargo.lock

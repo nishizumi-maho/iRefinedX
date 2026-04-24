@@ -1,48 +1,53 @@
 # Session Sharing and Exports
 
-This area covers the browser-side import/export helpers for Hosted, League, Official, and Test Drive flows.
+This page documents the current session sharing and export tools in `iRefinedX`.
 
-## Hosted and League Session Import/Export
+## Current Supported Areas
 
-Primary implementation:
+### Hosted / Leagues create-race flows
 
-- `extension/src/features/share-hosted-session.jsx`
+The create-race wizard can expose JSON import/export helpers so session setup can be moved between runs without re-entering the entire configuration by hand.
 
-Supporting helpers:
+### Test Drive
 
-- `helpers/download.js`
-- `helpers/json-safe.js`
-- `helpers/weather-import.js`
-- `helpers/react-resolver.js`
+Test Drive has its own narrower sharing flow and remains a separate feature toggle.
 
-### What It Does
+### Per-session export buttons
 
-- exports supported session configuration as JSON
-- imports supported session configuration back into compatible forms
-- normalizes weather payloads during import
+Where the live page exposes enough session context, `iRefinedX` can add `Export Session JSON` to individual sessions.
 
-### Why It Exists
+## Current UI Policy
 
-Hosted/League setup in the iRacing UI can be repetitive. These helpers reduce repeated manual form entry.
+The heavy aggregate page-header export buttons for Hosted and Leagues are currently hidden to reduce clutter.
 
-## Official Go Racing Export
+That leaves the more context-specific per-session actions as the visible path.
 
-Primary implementation:
+## Save Dialog Behavior
 
-- `extension/src/features/go-racing-export.js`
+Inside the desktop runtime, JSON exports are wired to the real Windows save flow.
 
-This feature focuses on exporting session data where supported on Go Racing pages.
-
-## Test Drive Sharing
-
-Primary implementation:
-
-- `extension/src/features/share-test-session.jsx`
-
-This is a lighter sharing helper for Test Drive contexts where the page exposes enough structure to attach a share/export action.
+That matters because browser-style download behavior is not enough inside the patched local UI. The desktop layer catches the relevant downloads and keeps the save dialog behavior consistent.
 
 ## Safety Boundaries
 
-- these tools only work where the page already exposes usable data
-- JSON export/import is browser-side convenience, not a backend integration
-- weather normalization is defensive, so mismatched payload shapes do not blindly overwrite live data
+These tools only operate on page state already visible to the logged-in user. They do not bypass:
+
+- entitlement checks
+- server-side validation
+- hidden admin-only options
+
+## Settings Surface
+
+The current settings panel can:
+
+- enable/disable Test Drive session sharing
+- enable/disable Hosted/League session tools
+- hide go-racing JSON export buttons
+
+## Relevant Files
+
+- `extension/src/features/share-hosted-session.jsx`
+- `extension/src/features/share-test-session.jsx`
+- `extension/src/features/go-racing-export.js`
+- `extension/src/helpers/download.js`
+- `desktop/official-runtime-bootstrap-source.cjs`

@@ -276,7 +276,6 @@ function render() {
   root.innerHTML = `
     <div class="iref-intelligence-header">
       <div class="iref-intelligence-copy">
-        <span class="iref-intelligence-label">iRefined V4</span>
         <h3 class="iref-intelligence-title">Intelligence Center</h3>
         <p class="iref-intelligence-subtitle">Member progress, awards, credits and recent activity from members-ng.</p>
       </div>

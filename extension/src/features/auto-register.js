@@ -5,6 +5,7 @@ import { getSettings } from "../helpers/settings.js";
 import { initSoundSupport, playQueueRegisteredSound } from "../helpers/sound.js";
 import {
   getFirstSessionActionEntry,
+  getWebUiLabels,
   getSessionActionEntries,
   includesWebUiLabel,
   isVisible,
@@ -18,6 +19,7 @@ const id = "auto-register";
 const bodyClass = "iref-" + id;
 const persistStorageKey = "iref_watch_queue";
 const registrationStorageKey = "iref_registration_state";
+const queueUpdatedEventName = "iref:watch-queue-updated";
 const autoRegisterLeadMs = 5 * 60 * 1000;
 const autoRegisterGraceMs = 15 * 60 * 1000;
 const queueRetentionMs = 12 * 60 * 60 * 1000;
@@ -25,6 +27,8 @@ const queueWithdrawRetryDelayMs = 2500;
 const queueRegisterDelayMs = 7000;
 const maxClockSyncSkewMs = 2 * 60 * 60 * 1000;
 const optimisticWithdrawWindowMs = 15 * 1000;
+const nativeConfirmationArmWindowMs = 15 * 1000;
+const pendingRegistrationTimeoutMs = 45 * 1000;
 const raceEventType = 5;
 const qualifyEventType = 3;
 const practiceEventType = 2;
@@ -65,10 +69,6 @@ const EVENT_TYPE_NAME_ALIASES = {
   ],
 };
 let persistInterval = 0;
-
-function isQueueCarPromptEnabled() {
-  return getSettings()["queue-car-prompt"] === true;
-}
 
 function shouldRequeueDisplacedRegistration() {
   return getSettings()["queue-requeue-displaced-registration"] === true;
@@ -126,6 +126,36 @@ function ensureWatchQueue() {
   return window.watchQueue;
 }
 
+function dispatchWatchQueueUpdated() {
+  document.dispatchEvent(
+    new CustomEvent(queueUpdatedEventName, {
+      detail: {
+        count: ensureWatchQueue().length,
+      },
+    })
+  );
+}
+
+function isPendingRegistrationStateStale(state) {
+  if (!state || state.status !== "registering" || state.confirmed_by_site === true) {
+    return false;
+  }
+
+  const referenceTime = state.register_requested_at || state.requested_at || state.updated_at;
+
+  if (!referenceTime) {
+    return false;
+  }
+
+  const parsed = new Date(referenceTime).getTime();
+
+  if (Number.isNaN(parsed)) {
+    return false;
+  }
+
+  return parsed < Date.now() - pendingRegistrationTimeoutMs;
+}
+
 function isRegistrationStateExpired(state) {
   if (!state || typeof state !== "object") {
     return true;
@@ -166,6 +196,10 @@ function loadRegistrationState() {
 function getRegistrationState() {
   if (window.irefRegistrationState === undefined) {
     loadRegistrationState();
+  }
+
+  if (isPendingRegistrationStateStale(window.irefRegistrationState)) {
+    clearRegistrationState();
   }
 
   if (isRegistrationStateExpired(window.irefRegistrationState)) {
@@ -225,6 +259,32 @@ function clearCurrentPageWithdrawPending() {
   window.irefPendingWithdrawState = null;
 }
 
+function getNativeConfirmationState() {
+  const state = window.irefNativeConfirmationState;
+
+  if (!state || !state.expires_at || state.expires_at <= Date.now()) {
+    window.irefNativeConfirmationState = null;
+    return null;
+  }
+
+  return state;
+}
+
+function clearNativeConfirmationState() {
+  window.irefNativeConfirmationState = null;
+}
+
+function armNativeConfirmation(kind = "generic", extra = {}) {
+  window.irefNativeConfirmationState = {
+    kind,
+    armed_at: new Date().toISOString(),
+    expires_at: Date.now() + nativeConfirmationArmWindowMs,
+    ...extra,
+  };
+
+  return window.irefNativeConfirmationState;
+}
+
 export function isCurrentPageWithdrawPending() {
   const pendingWithdrawState = getPendingWithdrawState();
 
@@ -261,6 +321,126 @@ export function confirmRegistrationState(extra = {}) {
     source: currentState.source || "site",
     registered_at: currentState.registered_at || new Date().toISOString(),
   });
+}
+
+function isRegisteredServerStatus(regStatus = "") {
+  const normalized = normalizeSearchText(regStatus);
+
+  return (
+    normalized === "reg_registered" ||
+    normalized === "registered" ||
+    normalized.endsWith("_registered")
+  );
+}
+
+function isClearedServerStatus(regStatus = "") {
+  const normalized = normalizeSearchText(regStatus);
+
+  return normalized === "reg_none" || normalized === "none" || normalized.endsWith("_none");
+}
+
+function findMatchingQueueItemForState(registrationState) {
+  if (!registrationState) {
+    return null;
+  }
+
+  return (
+    ensureWatchQueue().find((queueItem) =>
+      registrationTargetsMatch(
+        buildRegistrationStateFromQueueItem(queueItem),
+        registrationState
+      )
+    ) || null
+  );
+}
+
+function finalizeConfirmedQueueRegistration(confirmedState, previousState = null) {
+  if (
+    previousState?.confirmed_by_site === true &&
+    registrationTargetsMatch(previousState, confirmedState)
+  ) {
+    return;
+  }
+
+  const matchingQueueItem = findMatchingQueueItemForState(confirmedState);
+
+  if (matchingQueueItem) {
+    playQueueRegisteredSound();
+    removeQueueItem(matchingQueueItem);
+  }
+
+  if (confirmedState?.source === "queue" && confirmedState?.displaced_registration) {
+    requeueDisplacedRegistration(
+      confirmedState.displaced_registration,
+      confirmedState
+    );
+
+    setRegistrationState({
+      ...confirmedState,
+      displaced_registration: null,
+    });
+  }
+}
+
+function syncRegistrationStateFromServer(pushEvent = {}) {
+  if (!pushEvent || typeof pushEvent !== "object") {
+    return false;
+  }
+
+  if (pushEvent.type === "reg_withdraw_response") {
+    if (pushEvent.data?.success === true) {
+      clearNativeConfirmationState();
+    }
+
+    return pushEvent.data?.success === true;
+  }
+
+  if (pushEvent.type !== "registration_status") {
+    return false;
+  }
+
+  const previousState = getRegistrationState();
+  const regStatus = pushEvent.data?.reg_status || "";
+
+  if (isClearedServerStatus(regStatus)) {
+    clearNativeConfirmationState();
+    clearCurrentPageWithdrawPending();
+    clearRegistrationState();
+    setCurrentPageRegistrationMode("register");
+    syncCurrentPageRegistrationUi();
+    return true;
+  }
+
+  if (!isRegisteredServerStatus(regStatus)) {
+    return false;
+  }
+
+  clearNativeConfirmationState();
+  const confirmedState = confirmRegistrationState({
+    season_id: pushEvent.data?.season_id ?? previousState?.season_id ?? null,
+    season_name: previousState?.season_name || null,
+    car_id: pushEvent.data?.car_id ?? previousState?.car_id ?? null,
+    car_class_id: pushEvent.data?.car_class_id ?? previousState?.car_class_id ?? null,
+    session_id:
+      pushEvent.data?.session_id ??
+      pushEvent.data?.target_session_id ??
+      previousState?.session_id ??
+      null,
+    subsession_id:
+      pushEvent.data?.subsession_id ?? previousState?.subsession_id ?? null,
+    start_time:
+      pushEvent.data?.start_time
+        ? new Date(pushEvent.data.start_time).toISOString()
+        : previousState?.start_time ?? null,
+    event_type: pushEvent.data?.event_type ?? previousState?.event_type ?? null,
+    reg_status: regStatus,
+    reg_status_reason: pushEvent.data?.reg_status_reason || null,
+  });
+
+  finalizeConfirmedQueueRegistration(confirmedState, previousState);
+  setCurrentPageRegistrationMode("withdraw");
+  syncCurrentPageRegistrationUi();
+  return true;
 }
 
 function queueKey(queueItem) {
@@ -412,6 +592,7 @@ function persistQueue() {
 function setWatchQueue(queue) {
   window.watchQueue = cleanupQueue(queue);
   persistQueue();
+  dispatchWatchQueueUpdated();
 }
 
 function formatTimeLabel(value) {
@@ -434,6 +615,7 @@ function loadQueue() {
 
     if (!Array.isArray(stored)) {
       window.watchQueue = [];
+      dispatchWatchQueueUpdated();
       return;
     }
 
@@ -450,6 +632,9 @@ function loadQueue() {
             ...item,
             event_type: item.event_type ?? raceEventType,
             event_type_name: item.event_type_name || "Race",
+            auto_register_armed:
+              item.auto_register_armed !== false &&
+              startTime.getTime() > getCurrentTime(),
             registration_open: item.registration_open === true,
             start_time: startTime.toISOString(),
             status: item.status === "found" && item.session_id ? "found" : "queued",
@@ -464,9 +649,20 @@ function loadQueue() {
     );
 
     persistQueue();
+    dispatchWatchQueueUpdated();
   } catch {
     window.watchQueue = [];
+    dispatchWatchQueueUpdated();
   }
+}
+
+export function hydratePersistentAutoRegisterState() {
+  loadQueue();
+  loadRegistrationState();
+  return {
+    watchQueue: ensureWatchQueue(),
+    registrationState: getRegistrationState(),
+  };
 }
 
 function removeQueueItem(queueItem) {
@@ -811,6 +1007,17 @@ function restoreNativeSessionActions(section) {
   });
 }
 
+function restoreNativeTopActionRow(section) {
+  if (!section) {
+    return;
+  }
+
+  section.querySelectorAll(".iref-native-action-hidden").forEach((element) => {
+    element.classList.remove("iref-native-action-hidden");
+  });
+  section.querySelector("#iref-top-action-row")?.remove();
+}
+
 function findNativeWithdrawAction() {
   const nextRaceSection = findNextRaceSection();
   const nextRaceEntry = nextRaceSection ? findNextRaceProps(nextRaceSection) : null;
@@ -827,25 +1034,311 @@ function findNativeWithdrawAction() {
       ({ button }) => button
     )
   );
+  const withdrawLabels = getWebUiLabels("withdrawAction").map(normalizeSearchText);
+  const visibleButtons = [...actionScope.querySelectorAll("button, a")]
+    .filter((el) => !el.closest("#iref-top-action-row"))
+    .filter((el) => !el.closest("#iref-top-queue-row"))
+    .filter((el) => !el.closest("#iref-ui-root"))
+    .filter((el) => isVisible(el))
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
 
-  return [...actionScope.querySelectorAll("button, a")]
+  const explicitNativeWithdraw = visibleButtons.find((el) =>
+    withdrawLabels.includes(normalizeSearchText(el.innerText || el.textContent || ""))
+  );
+
+  if (explicitNativeWithdraw) {
+    return explicitNativeWithdraw;
+  }
+
+  const candidateButtons = [...actionScope.querySelectorAll("button, a")]
     .filter((el) => !el.closest("#iref-top-action-row"))
     .filter((el) => !el.closest("#iref-top-queue-row"))
     .filter((el) => !el.closest("#iref-ui-root"))
     .filter((el) => isVisible(el))
     .filter((el) => !nativeSessionButtons.has(el))
-    .find((el) => !!normalizeText(el.innerText || el.textContent || ""));
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
+
+  return (
+    candidateButtons.find((el) =>
+      withdrawLabels.includes(
+        normalizeSearchText(el.innerText || el.textContent || "")
+      )
+    ) || candidateButtons[0] || null
+  );
 }
 
-function tryWithdrawCurrentSession() {
-  const nativeWithdraw = findNativeWithdrawAction();
-
-  if (nativeWithdraw) {
-    nativeWithdraw.click();
+function isElementDisabled(el) {
+  if (!el) {
     return true;
   }
 
-  return ws.withdraw();
+  return (
+    el.disabled === true ||
+    el.getAttribute("aria-disabled") === "true" ||
+    el.classList.contains("disabled")
+  );
+}
+
+function clickActionElement(el) {
+  if (!el || isElementDisabled(el)) {
+    return false;
+  }
+
+  el.click();
+  return true;
+}
+
+function getActionLabels(key, fallback = []) {
+  return [
+    ...new Set(
+      [...getWebUiLabels(key), ...fallback]
+        .map(normalizeSearchText)
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function getNativeConfirmationLabels(kind = "generic") {
+  const registerLabels = getActionLabels("registerAction", [
+    "Register",
+    "Registrarse",
+    "Registrieren",
+    "S'inscrire",
+    "Iscriviti",
+    "Registar",
+    "Inscrever-se",
+  ]);
+  const withdrawLabels = getActionLabels("withdrawAction", [
+    "Withdraw",
+    "Cancel Registration",
+  ]);
+  const confirmLabels = [
+    "confirm",
+    "continue",
+    "yes",
+    "ok",
+    "proceed",
+    "submit",
+    "confirmar",
+    "continuar",
+    "sim",
+  ].map(normalizeSearchText);
+  const actionLabels =
+    kind === "withdraw"
+      ? withdrawLabels
+      : kind === "register"
+        ? registerLabels
+        : [...registerLabels, ...withdrawLabels];
+
+  return {
+    actionLabels,
+    primaryLabels: [...actionLabels, ...confirmLabels],
+  };
+}
+
+function getVisibleActionButtons(root = document) {
+  return [...root.querySelectorAll("button, a, [role='button']")]
+    .filter((el) => !el.closest("#iref-ui-root"))
+    .filter((el) => isVisible(el))
+    .filter((el) => !isElementDisabled(el))
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
+}
+
+function getDialogContext(node) {
+  return findClosest(node, (candidate) => {
+    if (!candidate || candidate === document.body || candidate === document.documentElement) {
+      return false;
+    }
+
+    if (candidate.closest("#iref-ui-root")) {
+      return false;
+    }
+
+    if (!isVisible(candidate)) {
+      return false;
+    }
+
+    const role = candidate.getAttribute?.("role");
+    const ariaModal = candidate.getAttribute?.("aria-modal");
+    const hasModalSelector =
+      typeof candidate.matches === "function" &&
+      candidate.matches(
+        "[data-radix-dialog-content], [data-radix-portal], .ReactModal__Content, .modal, [class*='modal'], [class*='dialog']"
+      );
+
+    return role === "dialog" || ariaModal === "true" || hasModalSelector;
+  });
+}
+
+function hasMatchingLabel(text, labels) {
+  const normalized = normalizeSearchText(text);
+
+  return labels.some(
+    (label) =>
+      normalized === label ||
+      normalized.startsWith(`${label} `) ||
+      normalized.endsWith(` ${label}`) ||
+      normalized.includes(label)
+  );
+}
+
+function tryAutoConfirmNativePrompt() {
+  const confirmationState = getNativeConfirmationState();
+
+  if (!confirmationState) {
+    return false;
+  }
+
+  const { actionLabels, primaryLabels } = getNativeConfirmationLabels(
+    confirmationState.kind
+  );
+  const candidates = getVisibleActionButtons()
+    .map((button) => {
+      const label = normalizeText(button.innerText || button.textContent || "");
+      const dialog = getDialogContext(button);
+
+      if (!dialog) {
+        return null;
+      }
+
+      return {
+        button,
+        label,
+        normalizedLabel: normalizeSearchText(label),
+        dialog,
+        dialogText: normalizeSearchText(dialog.innerText || dialog.textContent || ""),
+      };
+    })
+    .filter(Boolean);
+
+  if (!candidates.length) {
+    return false;
+  }
+
+  let match =
+    candidates.find(({ normalizedLabel }) => actionLabels.includes(normalizedLabel)) ||
+    candidates.find(({ label }) => hasMatchingLabel(label, actionLabels)) ||
+    candidates.find(
+      ({ label, dialogText }) =>
+        hasMatchingLabel(label, primaryLabels) && hasMatchingLabel(dialogText, actionLabels)
+    );
+
+  if (!match) {
+    const groupedByDialog = new Map();
+
+    candidates.forEach((candidate) => {
+      const existing = groupedByDialog.get(candidate.dialog) || [];
+      existing.push(candidate);
+      groupedByDialog.set(candidate.dialog, existing);
+    });
+
+    match =
+      [...groupedByDialog.values()]
+        .filter(
+          (group) =>
+            group.length === 1 && hasMatchingLabel(group[0].dialogText, actionLabels)
+        )
+        .map((group) => group[0])[0] || null;
+  }
+
+  if (!match) {
+    return false;
+  }
+
+  log(`🤖 Auto-confirming native ${confirmationState.kind} prompt`);
+  const clicked = clickActionElement(match.button);
+
+  if (clicked) {
+    clearNativeConfirmationState();
+  }
+
+  return clicked;
+}
+
+function detectNativeActionKind(button) {
+  if (!button || button.closest("#iref-ui-root")) {
+    return null;
+  }
+
+  if (getDialogContext(button)) {
+    return null;
+  }
+
+  const text = normalizeText(button.innerText || button.textContent || "");
+
+  if (!text) {
+    return null;
+  }
+
+  if (hasMatchingLabel(text, getActionLabels("withdrawAction", ["Withdraw"]))) {
+    return "withdraw";
+  }
+
+  if (hasMatchingLabel(text, getActionLabels("registerAction", ["Register"]))) {
+    return "register";
+  }
+
+  return null;
+}
+
+function installNativeActionInterceptors() {
+  if (window.__irefNativeActionInterceptorInstalled) {
+    return;
+  }
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest("button, a, [role='button']")
+        : null;
+      const actionKind = detectNativeActionKind(button);
+
+      if (actionKind) {
+        armNativeConfirmation(actionKind, { source: "native-click" });
+      }
+    },
+    true
+  );
+
+  window.__irefNativeActionInterceptorInstalled = true;
+}
+
+function tryWithdrawCurrentSession(options = {}) {
+  const { preferNative = false, autoConfirm = true } = options;
+  const nativeWithdraw = findNativeWithdrawAction();
+
+  if (!preferNative) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "ws-withdraw" });
+    }
+
+    if (ws.withdraw()) {
+      return true;
+    }
+  }
+
+  if (nativeWithdraw) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "native-withdraw" });
+    }
+
+    return clickActionElement(nativeWithdraw);
+  }
+
+  if (preferNative) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "ws-withdraw-fallback" });
+    }
+
+    return ws.withdraw();
+  }
+
+  if (autoConfirm) {
+    clearNativeConfirmationState();
+  }
+
+  return false;
 }
 
 function findNextRaceProps(section) {
@@ -1104,52 +1597,6 @@ function enrichStoredCarSelection(contentId, storedCar, cars = [], carClassIds =
   return enrichedSelection;
 }
 
-function promptCarSelection(contentId, cars = [], carClassIds = []) {
-  if (!Array.isArray(cars) || cars.length < 1) {
-    return null;
-  }
-
-  const preview = cars
-    .map((car, index) => `${index + 1}. ${car.car_name}`)
-    .join("\n");
-  const response = window.prompt(
-    `Choose a car for queued registration in series ${contentId}:\n\n${preview}`,
-    "1"
-  );
-
-  if (!response) {
-    log("Queue cancelled: no car chosen");
-    return null;
-  }
-
-  const selectedIndex = parseInt(response, 10) - 1;
-
-  if (
-    Number.isNaN(selectedIndex) ||
-    selectedIndex < 0 ||
-    selectedIndex >= cars.length
-  ) {
-    log("Queue cancelled: invalid car selection");
-    return null;
-  }
-
-  const selectedCar = cars[selectedIndex];
-  const resolvedCar = {
-    car_id: selectedCar.car_id,
-    car_class_id: resolveCarClassId(selectedCar, carClassIds),
-    car_name: selectedCar.car_name || null,
-  };
-
-  if (!resolvedCar.car_class_id) {
-    log("Queue cancelled: could not resolve the selected car class");
-    return null;
-  }
-
-  storeSelectedCar(contentId, resolvedCar);
-  log(`🚗 Queue will use ${selectedCar.car_name}`);
-  return resolvedCar;
-}
-
 function alertChooseCar() {
   window.alert("Choose a car!");
 }
@@ -1202,13 +1649,9 @@ function getSelectedCar(contentId, sessionProps, section) {
     return resolvedCar;
   }
 
-  if (!isQueueCarPromptEnabled()) {
-    log(`🚫 Queue needs a selected car for series ${contentId}`);
-    alertChooseCar();
-    return null;
-  }
-
-  return promptCarSelection(contentId, cars, carClassIds);
+  log(`🚫 Queue needs a selected car for series ${contentId}`);
+  alertChooseCar();
+  return null;
 }
 
 function makeQueueItem(sessionProps, slot, selectedCar) {
@@ -1219,6 +1662,7 @@ function makeQueueItem(sessionProps, slot, selectedCar) {
     car_id: selectedCar.car_id,
     car_class_id: selectedCar.car_class_id,
     car_name: selectedCar.car_name || null,
+    auto_register_armed: true,
     event_type: eventType ?? raceEventType,
     event_type_name: getSessionEventName(session),
     season_id: sessionProps.contentId ?? session.season_id,
@@ -1286,6 +1730,7 @@ function makeQueueItemFromRegistrationState(state) {
     car_id: state.car_id,
     car_class_id: state.car_class_id,
     car_name: state.car_name || null,
+    auto_register_armed: true,
     event_type: eventType,
     event_type_name:
       state.event_type_name ||
@@ -1405,9 +1850,8 @@ function ensureSessionQueueRow(container, queueSlotKey) {
     return null;
   }
 
-  const host = container.parentElement || container;
   const rowId = `iref-session-queue-row-${slugify(queueSlotKey)}`;
-  let row = host.querySelector(`#${CSS.escape(rowId)}`);
+  let row = container.querySelector(`#${CSS.escape(rowId)}`);
 
   if (row) {
     return row;
@@ -1416,7 +1860,7 @@ function ensureSessionQueueRow(container, queueSlotKey) {
   row = document.createElement("div");
   row.id = rowId;
   row.className = "iref-session-queue-row";
-  host.appendChild(row);
+  container.appendChild(row);
   return row;
 }
 
@@ -1540,7 +1984,6 @@ function syncQueueButtons() {
       button.dataset.irefQueueKey
     );
     const queueItem = getQueueItem(seasonId, startTime, eventType);
-
     setButtonState(button, queueItem, button.dataset.irefIdleLabel || "Queue");
   });
 }
@@ -1711,11 +2154,10 @@ function ensureTopQueueButtons(section, sessionProps) {
     "Qualify Queue",
     "Upcoming qualify sessions"
   );
-  const topActionMode = getDirectRegisterMode(section, sessionProps).mode;
   const currentStartTime = new Date(sessionProps.session.start_time).toISOString();
   const raceSlots = getQueueSlots(section, sessionProps)
     .filter((slot) =>
-      topActionMode === "withdraw"
+      canDirectRegisterSession(sessionProps)
         ? new Date(slot.start_time).toISOString() !== currentStartTime
         : true
     )
@@ -1741,6 +2183,7 @@ function getSessionButtonEntries(section, options = {}) {
   return getSessionActionEntries(section, {
     visibleOnly: false,
     skipButtons: options.skipButtons || [],
+    dedupe: options.dedupe !== false,
     skipSelectors: [
       ".iref-native-action-hidden",
       "#iref-top-action-row",
@@ -1981,7 +2424,7 @@ function buildRegistrationState(registerableProps, selectedCar, overrides = {}) 
 
 function startRegistrationFlow(registrationState, labels = {}, handlers = {}, options = {}) {
   const {
-    registerDelayMs = 5000,
+    registerDelayMs = 300,
     retryWithdrawBeforeRegister = false,
     withdrawRetryDelayMs = queueWithdrawRetryDelayMs,
   } = options;
@@ -1993,11 +2436,11 @@ function startRegistrationFlow(registrationState, labels = {}, handlers = {}, op
   }
 
   const previousRegistrationState = getRegistrationState();
-  const shouldRetryWithdraw =
+  const shouldWithdrawCurrentSession =
     retryWithdrawBeforeRegister ||
     (hasActiveRegistration(previousRegistrationState) &&
       !registrationTargetsMatch(previousRegistrationState, registrationState));
-  const effectiveRegisterDelayMs = shouldRetryWithdraw
+  const effectiveRegisterDelayMs = shouldWithdrawCurrentSession
     ? Math.max(registerDelayMs, withdrawRetryDelayMs + 2000)
     : registerDelayMs;
 
@@ -2009,16 +2452,21 @@ function startRegistrationFlow(registrationState, labels = {}, handlers = {}, op
     requested_at: new Date().toISOString(),
   });
 
-  const withdrew = tryWithdrawCurrentSession();
+  if (shouldWithdrawCurrentSession) {
+    const withdrew = tryWithdrawCurrentSession({
+      preferNative: false,
+      autoConfirm: true,
+    });
 
-  if (!withdrew) {
-    clearRegistrationState();
-    handlers.onWithdrawFailed?.();
-    log(labels.withdrawError || "🚫 Could not send the withdraw request");
-    return false;
+    if (!withdrew) {
+      clearRegistrationState();
+      handlers.onWithdrawFailed?.();
+      log(labels.withdrawError || "🚫 Could not send the withdraw request");
+      return false;
+    }
   }
 
-  if (shouldRetryWithdraw) {
+  if (shouldWithdrawCurrentSession) {
     window.setTimeout(() => {
       const currentState = getRegistrationState();
 
@@ -2026,13 +2474,23 @@ function startRegistrationFlow(registrationState, labels = {}, handlers = {}, op
         return;
       }
 
-      if (tryWithdrawCurrentSession()) {
+      if (tryWithdrawCurrentSession({ preferNative: false, autoConfirm: true })) {
         log(labels.withdrawRetry || "🔁 Retrying withdraw before register");
       }
     }, withdrawRetryDelayMs);
   }
 
   window.setTimeout(() => {
+    const currentState = getRegistrationState();
+
+    if (
+      currentState &&
+      currentState.status === "registering" &&
+      registrationTargetsMatch(currentState, registrationState)
+    ) {
+      armNativeConfirmation("register", { source: "ws-register" });
+    }
+
     const registered = ws.register(
       registrationState.season_name,
       registrationState.car_id,
@@ -2050,12 +2508,12 @@ function startRegistrationFlow(registrationState, labels = {}, handlers = {}, op
 
     setRegistrationState({
       ...registrationState,
-      status: "registered",
+      status: "registering",
       confirmed_by_site: false,
-      registered_at: new Date().toISOString(),
+      registered_at: null,
+      register_requested_at: new Date().toISOString(),
       requested_at: new Date().toISOString(),
     });
-    handlers.onRegistered?.();
     log(labels.registered || `✅ Sent register request for ${registrationState.season_name}`);
   }, effectiveRegisterDelayMs);
 
@@ -2127,7 +2585,10 @@ function scheduleLocalWithdrawRefresh() {
 }
 
 export function requestCurrentSessionWithdraw() {
-  const sent = tryWithdrawCurrentSession();
+  const sent = tryWithdrawCurrentSession({
+    preferNative: false,
+    autoConfirm: true,
+  });
 
   if (!sent) {
     log("🚫 Could not send the withdraw request");
@@ -2213,85 +2674,18 @@ function handleTopQueueClick(button, section, sessionProps) {
 function ensureDirectRegisterButtons(section, sessionProps) {
   const nextRace = findNextRaceProps(section);
   const viewButton = nextRace?.button;
-  const registerableProps = resolveRegisterableSessionProps(section, sessionProps);
 
   if (!viewButton || !sessionProps?.session) {
     return;
   }
 
   const anchorRow = findActionRowAnchor(viewButton);
-  const anchorParent = anchorRow?.parentElement;
-
-  if (!anchorRow || !anchorParent) {
-    return;
+  if (anchorRow) {
+    anchorRow.classList.remove("iref-native-action-hidden");
   }
 
-  anchorRow.classList.add("iref-native-action-hidden");
-
-  let actionRow = section.querySelector("#iref-top-action-row");
-
-  if (!actionRow) {
-    actionRow = createTopActionRow();
-    anchorParent.insertBefore(actionRow, anchorRow);
-  }
-
-  const primaryButton = actionRow.querySelector('[data-iref-role="primary"]');
-  const secondaryButton = actionRow.querySelector('[data-iref-role="secondary"]');
-  const { mode, registrationState } = getDirectRegisterMode(section, sessionProps);
-  const canRegister =
-    !!registerableProps?.session &&
-    canDirectRegisterSession(registerableProps) &&
-    Number(registerableProps.session.max_team_drivers || 1) <= 1;
-
-  section.dataset.irefRegistrationMode = mode;
-
-  if (mode !== "withdraw" && !canRegister) {
-    const startTime = new Date(sessionProps.session.start_time).toISOString();
-    const eventType = getSessionEventType(sessionProps.session);
-    const queueSlotKey = makeQueueSlotKey(sessionProps.contentId, eventType, startTime);
-
-    primaryButton.className =
-      "iref-series-action-btn iref-series-action-primary iref-top-primary-queue iref-queue-btn";
-    primaryButton.dataset.irefIdleLabel = "Queue for the next race";
-    primaryButton.dataset.irefQueueKey = queueSlotKey;
-    setButtonState(
-      primaryButton,
-      getQueueItem(sessionProps.contentId, startTime, eventType),
-      "Queue for the next race"
-    );
-    primaryButton.title = "Queue this race and register when the site opens registration.";
-    primaryButton.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      handleTopQueueClick(primaryButton, section, sessionProps);
-    };
-    secondaryButton.classList.add("hidden");
-    secondaryButton.onclick = null;
-    return;
-  }
-
-  primaryButton.className = "iref-series-action-btn iref-series-action-primary";
-  delete primaryButton.dataset.irefQueueKey;
-  delete primaryButton.dataset.irefIdleLabel;
-  syncActionButtonState(primaryButton, mode, registrationState, canRegister);
-  if (mode === "withdraw") {
-    primaryButton.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      handleDirectWithdraw(primaryButton, section);
-    };
-  } else {
-    primaryButton.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      handleDirectRegister(primaryButton, section, sessionProps, registerableProps);
-    };
-  }
-
-  secondaryButton.classList.add("hidden");
-  secondaryButton.textContent = "";
-  secondaryButton.title = "";
-  secondaryButton.onclick = null;
+  restoreNativeTopActionRow(section);
+  section.dataset.irefRegistrationMode = getDirectRegisterMode(section, sessionProps).mode;
 }
 
 function ensureSessionRegisterButton(nativeButton, sessionProps, section) {
@@ -2301,84 +2695,24 @@ function ensureSessionRegisterButton(nativeButton, sessionProps, section) {
     return;
   }
 
-  const contextSection = findNextRaceSection() || section || document.body;
-  const startTime = new Date(sessionProps.session.start_time).toISOString();
-  const eventType = getSessionEventType(sessionProps.session);
-  const registerKey = makeQueueSlotKey(sessionProps.contentId, eventType, startTime);
-
-  nativeButton.classList.add("iref-session-view-hidden");
-  container
-    .querySelector(`[data-iref-queue-key="${CSS.escape(registerKey)}"]`)
-    ?.remove();
-
-  let registerButton = container.querySelector(
-    `[data-iref-register-key="${CSS.escape(registerKey)}"]`
-  );
-
-  if (!registerButton) {
-    registerButton = document.createElement("button");
-    registerButton.type = "button";
-    registerButton.className = "iref-session-register-btn iref-series-action-btn iref-series-action-primary";
-    registerButton.dataset.irefRegisterKey = registerKey;
-    container.appendChild(registerButton);
-  }
-
-  const { mode, registrationState } = getDirectRegisterMode(
-    contextSection,
-    sessionProps
-  );
-  const canRegister =
-    canDirectRegisterSession(sessionProps) &&
-    Number(sessionProps.session.max_team_drivers || 1) <= 1 &&
-    isDirectRegisterableSession(sessionProps.session);
-
-  syncActionButtonState(registerButton, mode, registrationState, canRegister);
-  registerButton.title =
-    mode === "register"
-      ? `Register for this ${getSessionEventName(sessionProps.session).toLowerCase()} session from the browser.`
-      : registerButton.title;
-  if (mode === "withdraw") {
-    registerButton.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      handleDirectWithdraw(registerButton, contextSection);
-    };
-  } else {
-    registerButton.onclick = (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      handleDirectRegister(
-        registerButton,
-        contextSection,
-        sessionProps,
-        sessionProps
-      );
-    };
-  }
+  nativeButton.classList.remove("iref-session-view-hidden");
+  container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+    element.remove();
+  });
 }
 
 function ensureSessionQueueButtons(section, options = {}) {
   const { skipNextRaceButton = false } = options;
-  const nextRaceSection = skipNextRaceButton ? findNextRaceSection() : null;
-  const nextRaceButton = skipNextRaceButton && nextRaceSection
+  const nextRaceSection = findNextRaceSection();
+  const nextRaceButton = nextRaceSection
     ? findNextRaceProps(nextRaceSection)?.button
     : null;
   const practiceSessionsSection = findPracticeSessionsSection();
 
-  getSessionButtonEntries(section).forEach(({ button, props }) => {
+  getSessionButtonEntries(section, {
+    skipButtons: nextRaceButton ? [nextRaceButton] : [],
+  }).forEach(({ button, props }) => {
     if (skipNextRaceButton && button === nextRaceButton) {
-      return;
-    }
-
-    if (practiceSessionsSection?.contains(button)) {
-      return;
-    }
-
-    if (
-      !props?.session ||
-      props.session.max_team_drivers > 1 ||
-      !isQueueableSession(props.session)
-    ) {
       return;
     }
 
@@ -2388,15 +2722,54 @@ function ensureSessionQueueButtons(section, options = {}) {
       return;
     }
 
+    const clearCustomQueueRow = () => {
+      button.classList.remove("iref-session-view-hidden");
+      container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+        element.remove();
+      });
+      container.querySelectorAll(".iref-session-queue-row").forEach((element) => {
+        element.remove();
+      });
+    };
+
+    if (practiceSessionsSection?.contains(button)) {
+      clearCustomQueueRow();
+      return;
+    }
+
+    if (
+      !props?.session ||
+      props.session.max_team_drivers > 1 ||
+      !isQueueableSession(props.session)
+    ) {
+      clearCustomQueueRow();
+      return;
+    }
+
+    const startTime = new Date(props.session.start_time).toISOString();
+    const eventType = getSessionEventType(props.session);
+    const queueSlotKey = makeQueueSlotKey(props.contentId, eventType, startTime);
+    const existingQueueRow = container.querySelector(
+      `#${CSS.escape(`iref-session-queue-row-${slugify(queueSlotKey)}`)}`
+    );
+
+    if (canDirectRegisterSession(props)) {
+      clearCustomQueueRow();
+      return;
+    }
+
     button.classList.add("iref-session-view-hidden");
     container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
       element.remove();
     });
 
-    const startTime = new Date(props.session.start_time).toISOString();
-    const eventType = getSessionEventType(props.session);
-    const queueSlotKey = makeQueueSlotKey(props.contentId, eventType, startTime);
-    let queueButton = container.querySelector(
+    const queueRow = ensureSessionQueueRow(container, queueSlotKey);
+
+    if (!queueRow) {
+      return;
+    }
+
+    let queueButton = queueRow.querySelector(
       `[data-iref-queue-key="${CSS.escape(queueSlotKey)}"]`
     );
 
@@ -2437,7 +2810,7 @@ function ensureSessionQueueButtons(section, options = {}) {
           section
         );
       });
-      container.appendChild(queueButton);
+      queueRow.appendChild(queueButton);
     }
   });
 }
@@ -2450,15 +2823,10 @@ function ensurePracticeRegisterButtons(section) {
       return;
     }
 
-    if (!canDirectRegisterSession(props) || !isPracticeSession(props.session)) {
-      button.classList.remove("iref-session-view-hidden");
-      container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
-        element.remove();
-      });
-      return;
-    }
-
-    ensureSessionRegisterButton(button, props, section);
+    button.classList.remove("iref-session-view-hidden");
+    container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+      element.remove();
+    });
   });
 }
 
@@ -2574,7 +2942,10 @@ export function activateQueueItem(queueIndex, options = {}) {
   );
 
   const started = startRegistrationFlow(
-    registrationState,
+    {
+      ...registrationState,
+      displaced_registration: displacedRegistrationState,
+    },
     {
       withdrawError: "🚫 Could not send withdraw request",
       withdrawRetry: "🔁 Retrying withdraw before the queued register",
@@ -2589,11 +2960,6 @@ export function activateQueueItem(queueIndex, options = {}) {
       onRegisterFailed: () => {
         queueItem.status = "found";
         persistQueue();
-      },
-      onRegistered: () => {
-        playQueueRegisteredSound();
-        removeQueueItem(queueItem);
-        requeueDisplacedRegistration(displacedRegistrationState, registrationState);
       },
     },
     {
@@ -2613,6 +2979,8 @@ export function removeQueuedSession(queueItem) {
 }
 
 const wsCallback = (data) => {
+  syncRegistrationStateFromServer(data);
+
   ensureWatchQueue().forEach((queueItem) => {
     try {
       data.data.delta.INSERT.forEach((session) => {
@@ -2645,6 +3013,7 @@ window.setInterval(() => {
     }
 
     if (
+      queueItem.auto_register_armed !== false &&
       queueItem.status === "found" &&
       canQueueItemRegisterNow(queueItem) &&
       isInsideQueueRegisterWindow(queueItem.start_time)
@@ -2664,8 +3033,10 @@ async function init(activate = true) {
   loadQueue();
   loadRegistrationState();
   initSoundSupport();
+  installNativeActionInterceptors();
 
   persistInterval = window.setInterval(() => {
+    tryAutoConfirmNativePrompt();
     restoreNativeSessionActions(findCurrentlyRacingSection());
 
     const nextRaceSection = findNextRaceSection();
@@ -2674,6 +3045,7 @@ async function init(activate = true) {
       const nextRace = findNextRaceProps(nextRaceSection);
 
       if (nextRace) {
+        restoreNativeTopActionRow(nextRaceSection);
         syncCurrentTimeOffset(nextRaceSection, nextRace.props);
         ensureDirectRegisterButtons(nextRaceSection, nextRace.props);
         ensureTopQueueButtons(nextRaceSection, nextRace.props);

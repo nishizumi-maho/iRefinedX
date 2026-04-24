@@ -1,85 +1,95 @@
 # Privacy, Security, and Data Handling
 
-This project is intentionally conservative about permissions and data retention.
+This page documents the current privacy and security posture of `iRefinedX`.
 
-## Permission Surface
+## Current Security Review Results
 
-The stable manifest in `extension/public/manifest.json` requests only one extension permission:
+The current repository review checked the tracked source tree for:
 
-- `storage`
+- obvious hardcoded secrets
+- private keys
+- API keys
+- authentication tokens
+- passwords
 
-There are no host-level fetch permissions added beyond the content-script match scope already needed to run on the iRacing pages.
+No active secrets or credentials were intentionally present in the tracked application source. The only token-shaped reference in tracked files is the normal GitHub Actions `GH_TOKEN` placeholder used by release automation.
 
-## What the Extension Does
+## Dependency Audit
 
-- injects UI helpers into logged-in iRacing website pages
-- reads page state that the site already exposes in DOM or React props
-- stores a limited amount of browser-side state for settings, queue state, and dashboard widgets
+Current audit results:
 
-## What the Extension Does Not Intentionally Store
+- `npm audit --omit=dev --prefix extension`: clean
+- `npm audit --omit=dev --prefix desktop`: clean
+
+## Repository Hygiene
+
+The repository intentionally ignores generated and sensitive local-runtime material, including:
+
+- `node_modules/`
+- build output
+- `logs/`
+- `.analysis/`
+- extracted runtime scratch data
+- desktop run logs
+
+That matters because runtime instrumentation logs can contain navigation and request metadata that do not belong in source control.
+
+## Data Stored Locally
+
+`iRefinedX` stores only the minimum local state needed for settings and queue continuity, such as:
+
+- user settings
+- queued sessions
+- current registration state
+- update-check cache
+- optional per-season selected car memory
+
+## Data Not Intentionally Stored As A Product Feature
+
+`iRefinedX` does not intentionally store:
 
 - passwords
-- raw authentication tokens
-- e-mail addresses as a product feature
-- raw invoice HTML as long-term stored data
+- raw auth tokens
 - payment card data
-- private credentials for external services
+- external-service credentials
+- a cloud-synced personal profile
 
-## Financial Data Model
+## Runtime Logging Boundary
 
-The Budget Snapshot and Order History analyzer are designed around derived summaries rather than durable raw page dumps.
+The desktop runtime can log:
 
-The intended pattern is:
+- page navigation
+- selected request metadata
+- websocket visibility
+- probe output useful for debugging register/withdraw/export flows
 
-1. parse Order History on the Order History page
-2. classify rows into categories
-3. publish a reduced summary through the storage bridge
-4. render that summary in the dashboard widget
-
-The dashboard uses hidden-by-default values and keeps visible widget state scoped to the current tab session.
-
-## Why the Bridge Is Narrow
-
-`extension/public/bridge.js` is not a general-purpose pipe. It only exposes a small allowlist of storage keys used for derived summaries.
-
-That reduces the chance of unrelated page scripts using the bridge as a generic storage transport.
-
-## Browser-Side Only Scope
-
-This repository is intentionally browser-first.
-
-It does not:
-
-- attach to the installed sim client
-- send driving inputs
-- attempt to bypass iRacing authentication
-- replace iRacing's launch handoff into the local app
+These logs are local diagnostics only. They should not be committed or published casually.
 
 ## Update Checks
 
-The update-notice feature checks the public GitHub Releases page for a newer release.
+The update system calls only the public GitHub Releases API for `nishizumi-maho/iRefinedX`.
 
-This is used only to notify the user that a new version exists. The extension does not self-install updates.
+It is notification-only:
 
-## Practical Privacy Defaults
+- no silent install
+- no privilege escalation
+- no private update service
 
-The project currently follows several privacy-oriented defaults:
+## Product Boundary
 
-- financial values are hidden until the user reveals them
-- budget widget state is not intended to survive a full tab-session reset
-- only the minimum extension permission is requested
-- there is no cloud sync service for user financial data
+`iRefinedX` is not a simulator cheat or bypass layer. It does not:
 
-## Security Boundaries
+- automate driving
+- bypass iRacing login
+- replace iRacing entitlement checks
+- keep a background queue engine alive while the UI is closed
 
-Like any site-integrated extension, this project depends on the target site's DOM and client-side data model. If the target site changes significantly, the safe response is to update selectors and logic rather than widening permissions or adding invasive hooks.
+## Maintenance Posture
 
-## Recommended Maintenance Practice
+The intended maintenance rule is simple:
 
-For this repository, the safe long-term posture is:
-
-- keep permissions minimal
-- keep the bridge allowlist small
-- avoid retaining raw account data unless strictly needed
-- prefer derived summaries over raw copies
-- document behavior clearly in the wiki and changelog
+- keep the desktop wrapper thin
+- keep stored data local and small
+- keep permissions narrow
+- keep release/update behavior explicit
+- keep stale experimental branches and unused artifacts out of the repository

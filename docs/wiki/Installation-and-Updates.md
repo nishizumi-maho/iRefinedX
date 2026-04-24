@@ -1,63 +1,106 @@
 # Installation and Updates
 
-## Release Install
+This page explains the current desktop install model for `iRefinedX` and how release notifications behave.
 
-The normal user install path is an unpacked Chromium extension install.
+## Runtime Prerequisites
 
-1. Open the [Releases page](https://github.com/nishizumi-maho/irefinedWEB/releases).
-2. Download the latest Chromium package, for example `irefined-browser-chromium-v5.1.zip`.
-3. Extract it to a permanent folder.
-4. Open `chrome://extensions` or `edge://extensions`.
-5. Enable **Developer mode**.
-6. Click **Load unpacked**.
-7. Select the extracted folder containing `manifest.json`.
-8. Open `https://members-ng.iracing.com/web/racing/home/dashboard`.
+`iRefinedX` assumes:
 
-## Update Model
+- Windows
+- a working local iRacing installation
+- the official `iRacingUI.exe` present under the normal iRacing UI directory, unless overridden by environment variables
+- Node.js when running from source
 
-This project is not currently distributed through a browser extension store.
+## Local Source Flow
 
-That means:
+From the repository root:
 
-- updates are manual
-- users download a newer release zip
-- users extract it
-- users reload the unpacked extension
+1. build the injected web layer  
+   `npm --prefix extension install`  
+   `npm --prefix extension run build`
+2. install the desktop launcher dependency  
+   `npm --prefix desktop install`
+3. start the launcher  
+   `npm --prefix desktop start`
 
-## In-Extension Update Detection
+## What The Launcher Does On Start
 
-The extension checks the repository's latest GitHub release using the GitHub Releases API.
+At startup the desktop layer:
 
-Current behavior:
+1. locates the installed iRacing UI
+2. extracts the official `app.asar` if needed
+3. patches the official `main.js` and `preload.js`
+4. writes the `iRefinedX` bootstrap module into the extracted runtime
+5. starts the official `iRacingUI.exe`
+6. injects the built `iRefinedX` layer into matching pages
 
-- the check is cached locally
-- the toolbar can show an update badge
-- the settings panel can show the latest release link
-- the newer builds can also show a popup-style notice
+This is why the product behaves like the official local UI instead of a reimplementation.
 
-The extension never self-installs updates.
+## Installed App Discovery Flow
 
-## Supported Stable Browser
+The packaged Windows app tries to locate the official iRacing UI automatically before it asks the user for anything.
 
-The stable published target is Chromium:
+Discovery order:
 
-- Chrome
-- Edge
-- Brave
-- Vivaldi
-- Opera
+1. a previously saved `iRefinedX` UI path
+2. the Windows `iracing://` protocol association in the registry
+3. common default install locations such as `C:\Program Files (x86)\iRacing\ui` and `D:\Program Files (x86)\iRacing\ui`
 
-## Local Development Install
+If those checks fail, `iRefinedX` opens a folder picker. The user can select either the iRacing root folder or the `ui` folder directly. Once a valid folder is chosen, the app caches it locally and reuses it on future launches.
 
-For local development:
+## Installer Options
 
-1. run `npm install` in `extension/`
-2. run `npm run build`
-3. load `extension/dist/` as an unpacked extension
+The Windows installer is the intended release artifact for normal users.
 
-## Common Installation Mistakes
+It installs `iRefinedX` as its own launcher and exposes two install-time options:
 
-- loading the `.zip` file directly instead of extracting it
-- extracting into a temporary folder that later disappears
-- selecting the wrong folder instead of the one that contains `manifest.json`
-- forgetting to reload the extension after downloading a newer release
+- `Create a desktop shortcut`
+- `Start iRefinedX when Windows starts`
+
+This keeps the official iRacing shortcut untouched while still making the modified launcher easy to access.
+
+## Update Detection
+
+`iRefinedX` checks the latest GitHub Release through the public Releases API:
+
+- desktop runtime popup: native desktop modal shown by the launcher
+- in-app notice: update toolbar button plus settings-panel note inside the injected UI
+
+Version metadata comes from:
+
+- `desktop/package.json`
+- `extension/package.json`
+- `extension/vite.config.js`
+
+## Update Behavior
+
+When a newer release exists:
+
+- a desktop popup is shown prominently
+- the popup can open the latest release page directly
+- the in-app UI also exposes the new version inside the toolbar and settings panel
+
+The updater is notification-only. It does not silently replace files or patch the app in the background.
+
+## Release Artifact Model
+
+The intended public release artifact is a Windows installer published on GitHub Releases.
+
+Portable development output can still exist for local testing, but the main user-facing distribution path is the installer.
+
+The update popup deliberately points users to the release page instead of attempting a self-update.
+
+## Upgrade Guidance
+
+When a new release is published:
+
+1. close `iRefinedX`
+2. download the newer release installer
+3. run the installer
+4. reopen `iRefinedX`
+
+## Boundaries
+
+- if GitHub has no release yet, no update is shown
+- if the app is offline, the update check fails quietly and only logs the failure
+- the updater does not depend on any private API or secret token

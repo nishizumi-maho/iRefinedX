@@ -1,10 +1,12 @@
 .iref-dashboard-intelligence-center {
+  width: 100%;
   padding: 14px 16px;
   border: 1px solid rgba(74, 96, 145, 0.42);
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(20, 28, 48, 0.96), rgba(13, 18, 32, 0.96));
   color: #eef4ff;
   box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  box-sizing: border-box;
 }
 
 .iref-intelligence-header,
@@ -19,6 +21,8 @@
 .iref-intelligence-header {
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .iref-intelligence-copy {
@@ -78,15 +82,10 @@
   min-height: 0;
 }
 
-.iref-intelligence-grid,
-.iref-intelligence-sections-grid,
-.iref-intelligence-card-grid,
-.iref-intelligence-mini-grid {
-  gap: 12px;
-  flex-wrap: wrap;
-}
-
 .iref-intelligence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
   margin-bottom: 12px;
 }
 
@@ -143,6 +142,9 @@
 }
 
 .iref-intelligence-sections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
   align-items: stretch;
   margin-top: 12px;
 }
@@ -164,12 +166,14 @@
 
 .iref-intelligence-card-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
 }
 
 .iref-intelligence-mini-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
 }
 
 .iref-intelligence-compact-card {

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "iRefined Browser",
-  "version": "6.0.0",
-  "version_name": "v6",
-  "description": "Loads iRefined on the members-ng iRacing website.",
+  "name": "iRefinedX",
+  "version": "1.0.0",
+  "version_name": "v1",
+  "description": "Loads the iRefinedX enhancement layer inside the local iRacing UI runtime.",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -11,7 +11,7 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_title": "iRefined Browser",
+    "default_title": "iRefinedX",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png",
@@ -39,23 +39,12 @@
     {
       "matches": [
         "https://members-ng.iracing.com/web/*",
-        "https://members-ng.iracing.com/web/racing/*",
-        "https://members.iracing.com/membersite/account/*"
+        "https://members-ng.iracing.com/web/racing/*"
       ],
       "js": [
         "bridge.js"
       ],
       "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "https://members.iracing.com/membersite/account/OrderHistory.do*"
-      ],
-      "js": [
-        "account-main.js"
-      ],
-      "run_at": "document_idle",
-      "world": "MAIN"
     }
   ]
 }

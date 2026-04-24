@@ -1,94 +1,81 @@
 # Build, Release, and CI
 
-This page documents how the repository is built and how release artifacts are produced.
+This page documents the current build and release model for the desktop-first `iRefinedX` repository.
 
-## Local Development Build
+## Local Build
 
-The extension project lives under `extension/`.
+### Extension layer
 
-Typical local flow:
+The injected UI layer lives in `extension/`.
 
-1. install dependencies with `npm install`
-2. build with `npm run build`
-3. load the built or unpacked extension into a Chromium browser
+Typical commands:
 
-The repository's stable user-facing install path remains GitHub Releases rather than a browser store.
+- `npm --prefix extension install`
+- `npm --prefix extension run build`
 
-## Extension Packaging
+This produces `extension/dist/`.
 
-The browser extension output is generated into `extension/dist/`.
+### Desktop layer
 
-Release packaging then zips the relevant output so users can:
+The launcher lives in `desktop/`.
 
-1. download the release zip
-2. extract it locally
-3. load the extracted folder via `chrome://extensions` or `edge://extensions`
+Typical commands:
+
+- `npm --prefix desktop install`
+- `npm --prefix desktop run check`
+- `npm --prefix desktop start`
 
 ## Version Sources
 
-Version information is primarily maintained in:
+Current version metadata is maintained in:
 
+- `desktop/package.json`
 - `extension/package.json`
 - `extension/public/manifest.json`
 
-The release artifacts should match the extension version declared there.
+The current reset baseline is `v1`.
 
-## Main GitHub Actions Workflows
+## CI Workflow
 
-### Extension build workflow
+`.github/workflows/extension.yml` is now the main CI verification workflow.
 
-The repository uses a build workflow to verify that the extension still bundles correctly.
+It currently:
 
-This protects against:
+- installs extension dependencies
+- builds the injected layer
+- installs desktop dependencies
+- syntax-checks the desktop runtime scripts
 
-- broken imports
-- syntax errors
-- packaging regressions
+## Release Workflow
 
-### Release workflow
+`.github/workflows/release.yml` now builds the Windows `iRefinedX` installer instead of the old browser-extension zip or runtime-only bundle.
 
-The release workflow packages the extension and attaches the resulting zip to a GitHub Release.
+Current release automation:
 
-This is the distribution path used by end users.
+- runs on Windows
+- builds `extension/dist/`
+- prepares the packaged desktop app payload
+- builds the NSIS installer with `electron-builder`
+- uploads the installer and blockmap as release assets
 
-### Wiki sync workflow
+The release page is also the target used by the in-app update popup.
 
-The repository now includes `.github/workflows/wiki-sync.yml`.
+## Wiki Sync Workflow
 
-Its purpose is to publish the contents of `docs/wiki/` into the GitHub wiki so the detailed technical documentation stays versioned in the repository.
+`.github/workflows/wiki-sync.yml` publishes `docs/wiki/` into the GitHub wiki.
 
-Current behavior:
+That keeps detailed docs:
 
-- can be triggered manually
-- also syncs on pushes to `main` that affect `docs/wiki/**`
-
-## Why the Wiki Sources Live in the Repository
-
-Keeping wiki pages in `docs/wiki/` has two advantages:
-
-- documentation changes are reviewable in normal pull requests
-- the live wiki can still be published automatically
-
-This avoids the common problem where a repository wiki drifts away from the code because it is edited separately.
-
-## Release Documentation Model
-
-The repository documentation is now split intentionally:
-
-- `README.md`: concise entry point for installation and common repository information
-- `CHANGELOG.md`: root historical changelog
-- `docs/changelogs/`: version-specific release notes
-- `docs/wiki/`: detailed technical documentation that also publishes to the GitHub wiki
-- `docs/research/`: deeper analysis/reference documents that are useful to keep versioned
+- versioned in the repository
+- reviewable in normal diffs
+- synced to the live wiki without manual copy-paste
 
 ## Recommended Release Checklist
 
-For maintainers, the practical release checklist is:
-
-1. update version in `package.json` and `manifest.json`
-2. update `CHANGELOG.md`
-3. add a version-specific changelog under `docs/changelogs/` if needed
-4. run the build
-5. validate the packaged artifact
-6. draft the GitHub Release with the changelog summary
-7. publish when ready
+1. keep `desktop/package.json`, `extension/package.json` and `manifest.json` aligned
+2. build `extension/dist/`
+3. run `npm --prefix desktop run check`
+4. validate the packaged launcher against a real local iRacing install
+5. build `npm --prefix desktop run dist:win`
+6. publish the GitHub Release with the installer asset
+7. verify the update popup resolves to the new release page

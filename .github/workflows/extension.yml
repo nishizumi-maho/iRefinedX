@@ -1,4 +1,4 @@
-name: extension
+name: ci
 
 on:
   push:
@@ -21,9 +21,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: extension/package-lock.json
+          cache-dependency-path: |
+            extension/package-lock.json
+            desktop/package-lock.json
 
-      - name: Install dependencies
+      - name: Install extension dependencies
         run: npm ci
         working-directory: extension
 
@@ -31,16 +33,10 @@ jobs:
         run: npm run build
         working-directory: extension
 
-      - name: Package Chromium release zip
-        run: |
-          PACKAGE_DIR="release/irefined-browser-chromium-build-${{ github.run_number }}"
-          mkdir -p "$PACKAGE_DIR"
-          cp -R extension/dist/. "$PACKAGE_DIR/"
-          cd release
-          zip -r "irefined-browser-chromium-build-${{ github.run_number }}.zip" "irefined-browser-chromium-build-${{ github.run_number }}"
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop
 
-      - name: Upload release-style artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: irefined-browser-chromium-build-${{ github.run_number }}
-          path: release/irefined-browser-chromium-build-${{ github.run_number }}.zip
+      - name: Validate desktop runtime scripts
+        run: npm run check
+        working-directory: desktop

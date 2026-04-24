@@ -29,13 +29,18 @@
 
 .iref-queue-btn-inline {
   min-height: 36px;
-  width: 100%;
+  width: 154px;
+  max-width: 100%;
+  flex: 0 0 154px;
 }
 
 .iref-session-queue-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  justify-content: flex-end;
 }
 
 .iref-session-view-hidden {
@@ -43,8 +48,9 @@
 }
 
 .iref-queue-btn-queued {
-  background: rgba(98, 114, 154, 0.95);
-  border-color: rgba(157, 171, 204, 0.45);
+  background: linear-gradient(180deg, rgba(152, 105, 28, 0.98), rgba(113, 74, 18, 0.98));
+  border-color: rgba(236, 184, 94, 0.55);
+  color: #fff8e7;
 }
 
 .iref-queue-btn-found {

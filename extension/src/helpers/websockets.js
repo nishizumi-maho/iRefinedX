@@ -17,6 +17,31 @@ let authSocket;
 let initialized = false;
 let callbacks = [];
 
+function updateDebugState(patch = {}) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const previousState =
+    window.__irefinedWsState && typeof window.__irefinedWsState === "object"
+      ? window.__irefinedWsState
+      : {
+          ready: false,
+          initialized: false,
+          authConnected: false,
+          clientConnected: false,
+          releaseId: "",
+          lastError: "",
+          lastCommand: null,
+          lastEvent: "",
+        };
+
+  window.__irefinedWsState = {
+    ...previousState,
+    ...patch,
+  };
+}
+
 function id() {
   var t = function () {
     return Math.floor((1 + Math.random()) * 65536)
@@ -38,6 +63,11 @@ function initWS() {
   const release = getSentryRelease();
 
   if (!release?.id) {
+    updateDebugState({
+      releaseId: "",
+      lastError: "release-unavailable",
+      ready: false,
+    });
     log("🚫 Could not detect the iRacing client version for websocket auth");
     return;
   }
@@ -65,33 +95,78 @@ function initWS() {
 
   authSocket.on("connect", () => {
     initialized = false;
+    updateDebugState({
+      releaseId: release.id,
+      authConnected: true,
+      initialized: false,
+      ready: false,
+      lastError: "",
+      lastEvent: "auth-connect",
+    });
     log("⚡ Connected to iRacing");
   });
 
   authSocket.on("disconnect", () => {
+    updateDebugState({
+      authConnected: false,
+      ready: false,
+      lastEvent: "auth-disconnect",
+    });
     log("⛓️‍💥 Disconnected from iRacing");
   });
 
   authSocket.on("connect_error", (error) => {
+    updateDebugState({
+      authConnected: false,
+      ready: false,
+      lastError: error.message,
+      lastEvent: "auth-connect-error",
+    });
     log(`🚫 iRacing auth socket error: ${error.message}`);
   });
 
   clientSocket.on("connect", () => {
+    updateDebugState({
+      clientConnected: true,
+      ready: initialized,
+      lastError: "",
+      lastEvent: "client-connect",
+    });
     log("🔌 Connected to client.io");
   });
 
   clientSocket.on("disconnect", () => {
     initialized = false;
+    updateDebugState({
+      clientConnected: false,
+      initialized: false,
+      ready: false,
+      lastEvent: "client-disconnect",
+    });
     log("🔌 Disconnected from client.io");
   });
 
   clientSocket.on("connect_error", (error) => {
     initialized = false;
+    updateDebugState({
+      clientConnected: false,
+      initialized: false,
+      ready: false,
+      lastError: error.message,
+      lastEvent: "client-connect-error",
+    });
     log(`🚫 client.io socket error: ${error.message}`);
   });
 
   clientSocket.on("initialized", (data) => {
     initialized = true;
+    updateDebugState({
+      initialized: true,
+      ready: true,
+      lastError: "",
+      lastEvent: "initialized",
+      initializedAt: new Date().toISOString(),
+    });
     authSocket.emit("now");
     log("✅ iRacing websocket ready");
 
@@ -130,12 +205,34 @@ function initWS() {
 
 function send(event, data) {
   if (!clientSocket || !clientSocket.connected || !initialized) {
+    updateDebugState({
+      ready: false,
+      lastError: "not-ready",
+      lastEvent: "send-blocked",
+      lastCommand: {
+        event,
+        service: data?.service || "",
+        method: data?.method || "",
+        at: new Date().toISOString(),
+      },
+    });
     log("🚫 iRacing websocket is not ready yet");
     return false;
   }
 
   data.refid = id();
   clientSocket.emit(event, data);
+  updateDebugState({
+    ready: true,
+    lastError: "",
+    lastEvent: "send",
+    lastCommand: {
+      event,
+      service: data?.service || "",
+      method: data?.method || "",
+      at: new Date().toISOString(),
+    },
+  });
   return true;
 }
 

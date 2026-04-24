@@ -1,4 +1,3 @@
-const CACHE_KEY = "iref_release_info";
 const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export const CURRENT_VERSION = __IREF_VERSION__;
@@ -7,6 +6,10 @@ export const REPO_URL = __IREF_REPO_URL__;
 export const REPO_SLUG = __IREF_REPO_SLUG__;
 export const RELEASES_URL = __IREF_RELEASES_URL__;
 export const RELEASES_API_URL = __IREF_RELEASES_API_URL__;
+
+function getCacheKey() {
+  return `iref_release_info::${REPO_SLUG || "nishizumi-maho/iRefinedX"}`;
+}
 
 function normalizeVersion(value = "") {
   const numeric = String(value).match(/\d+(?:\.\d+)*/)?.[0];
@@ -83,7 +86,7 @@ function normalizeUpdateInfo(info = {}) {
 
 function readCachedInfo() {
   try {
-    const parsed = JSON.parse(localStorage.getItem(CACHE_KEY));
+    const parsed = JSON.parse(localStorage.getItem(getCacheKey()));
 
     if (!parsed || typeof parsed !== "object") {
       return null;
@@ -96,7 +99,7 @@ function readCachedInfo() {
 }
 
 function writeCachedInfo(info) {
-  localStorage.setItem(CACHE_KEY, JSON.stringify(info));
+  localStorage.setItem(getCacheKey(), JSON.stringify(info));
   return info;
 }
 
@@ -111,19 +114,27 @@ function publishUpdateInfo(info) {
 }
 
 function parseReleaseInfo(payload) {
-  const latestTag = payload?.tag_name || payload?.name || CURRENT_DISPLAY_VERSION;
+  const release = (Array.isArray(payload) ? payload : [payload])
+    .filter((entry) => entry && !entry.draft)
+    .sort((left, right) => {
+      const leftTime = new Date(left?.published_at || left?.created_at || 0).getTime();
+      const rightTime = new Date(right?.published_at || right?.created_at || 0).getTime();
+      return rightTime - leftTime;
+    })[0];
+  const latestTag = release?.tag_name || release?.name || CURRENT_DISPLAY_VERSION;
   const latestVersion = getComparableLatestVersion({
     latestTag,
-    releaseName: payload?.name || latestTag,
+    releaseName: release?.name || latestTag,
   });
 
   return normalizeUpdateInfo({
     checkedAt: Date.now(),
     latestTag,
     latestVersion,
-    releaseName: payload?.name || latestTag,
-    releaseUrl: payload?.html_url || RELEASES_URL,
-    publishedAt: payload?.published_at || null,
+    releaseName: release?.name || latestTag,
+    releaseUrl: release?.html_url || RELEASES_URL,
+    publishedAt: release?.published_at || null,
+    prerelease: !!release?.prerelease,
   });
 }
 
@@ -153,12 +164,12 @@ export async function checkForUpdates({ force = false } = {}) {
     const info = writeCachedInfo(parseReleaseInfo(payload));
 
     if (info.available) {
-      console.info("[iRefined] Update available:", info.latestTag);
+      console.info("[iRefinedX] Update available:", info.latestTag);
     }
 
     return publishUpdateInfo(info);
   } catch (error) {
-    console.warn("[iRefined] Failed to check for updates", error);
+    console.warn("[iRefinedX] Failed to check for updates", error);
     return publishUpdateInfo(
       cached ||
         getFallbackInfo({

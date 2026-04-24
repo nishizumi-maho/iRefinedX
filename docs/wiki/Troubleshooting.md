@@ -1,88 +1,77 @@
 # Troubleshooting
 
-This page covers the common failure modes for the browser-side extension.
+This page collects the most common current failure modes.
 
-## First Checks
-
-Before debugging anything deeper, verify:
-
-1. the extension is loaded in the browser and enabled
-2. the extracted folder still exists on disk
-3. the current page is on `members-ng.iracing.com`
-4. the browser extension has been reloaded after updating files
-5. the user is logged into iRacing
-
-## If a Button Does Not Appear
+## The App Starts But The UI Looks Unmodified
 
 Check:
 
-- whether the page actually exposes the needed action
-- whether the feature is enabled in the iRefined settings
-- whether iRacing changed the page layout or React props for that page
+- `extension/dist/` was built successfully
+- the launcher was started from the current repository copy
+- the runtime log shows `window-injected`
+- the runtime did not fall back to an older build directory
 
-Common example:
+Useful files:
 
-- practice register only appears when the site exposes a valid practice registration target
+- `desktop/runlogs/stdout-local-runtime.log`
+- `logs/*.jsonl`
 
-## If Queue or Registration State Looks Wrong
+## Queue Bar Is Empty After Restart
 
-The session tooling depends on live page state and browser-side queue state.
+Expected current behavior:
 
-Useful checks:
+- queued sessions should hydrate immediately on app open
+- you should not need to revisit the original series page
 
-- reload the page once
-- confirm whether the current session is actually open in the iRacing UI
-- check whether another registration is already active
-- enable the inline `logger` setting if you need more visibility
+If it does not:
 
-## If Budget Snapshot Does Not Show Spend
+- check local storage for `iref_watch_queue`
+- confirm the app is running the current built source
+- inspect the latest `renderer-probe` log entries for queue count
 
-Real spend requires an Order History sync.
+## Queue Did Not Register While The App Was Closed
 
-Expected flow:
+That is expected.
 
-1. visit `Order History`
-2. let the analyzer finish
-3. return to the dashboard
-4. reveal the values in the widget
+The queue is persistent, but it is not a background daemon. `iRefinedX` only executes queue actions while the UI is actually open.
 
-If current catalog estimates show but real spend does not, the Order History sync path is the part to inspect first.
+## Register Or Withdraw Spins Forever
 
-## If the Dashboard Widgets Look Empty
+This usually means one of three things:
 
-Possible reasons:
+- the page state changed and the DOM did not refresh
+- the websocket or local-service push did not reach the injected layer
+- the user is testing an older build without the current websocket truth-source fixes
 
-- the current page is not the dashboard
-- the widget feature is disabled in settings
-- iRacing changed the dashboard data shape
-- no synced data exists yet for the relevant widget
+Check the latest runtime log for:
 
-## If the Layout Looks Misaligned
+- `registration_status`
+- `reg_registered`
+- `reg_none`
+- `reg_withdraw_response`
 
-The iRacing site is a React application that changes over time. Layout issues are often caused by:
+## Save Dialog Does Not Open For Session JSON
 
-- a selector drift after a site update
-- a sidebar tweak conflicting with a page redesign
-- a widget anchor no longer matching the dashboard container structure
+Check:
 
-## Logging
+- the action is running inside the desktop runtime, not a plain browser
+- the runtime log does not show `will-download` interception failures
+- the page actually exposed a valid session export action
 
-The `logger` setting can be enabled from the settings panel to expose more internal status information on-page.
+## Update Popup Does Not Appear
 
-That is the fastest way to inspect runtime behavior without attaching additional tooling.
+Check:
 
-## Good Bug Reports
+- the current release tag is newer than the local version
+- the repo has at least one published GitHub Release
+- outbound access to the GitHub Releases API is not blocked
 
-The most useful reports include:
+If there is no published release yet, the updater has nothing to announce.
 
-- exact page URL or page type
-- extension version
-- browser and version
-- what the page was expected to show
-- what actually appeared
-- whether reloading changed the behavior
-- a screenshot if the issue is visual
+## iRacing Updated And The Wrapper Broke
 
-## When the Root Cause Is iRacing-Side
+The launcher patches extracted official files. After a real iRacing UI update, re-run the launcher and, if needed, inspect:
 
-This project depends on data and actions exposed by the iRacing website. Some failures are not local bugs in the extension but changes in the underlying site structure or data exposure. In those cases the fix is usually a selector/data-resolution update, not a settings change.
+- `desktop/prepare-runtime.cjs`
+- `desktop/official-runtime-bootstrap-source.cjs`
+- the latest log for patching failures

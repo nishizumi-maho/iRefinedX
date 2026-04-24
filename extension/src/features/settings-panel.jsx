@@ -16,6 +16,8 @@ async function initSettingsPanel(activate = true) {
     return;
   }
 
+  let boundTrigger = null;
+
   const ensureOverlay = () => {
     let overlay = $("#iref-settings-overlay");
 
@@ -95,14 +97,14 @@ async function initSettingsPanel(activate = true) {
     title.textContent = `Update available: ${info.latestTag}`;
 
     const description = document.createElement("p");
-    description.textContent = `You are on ${CURRENT_DISPLAY_VERSION}. A newer GitHub Release is available for download.`;
+    description.textContent = `You are on ${CURRENT_DISPLAY_VERSION}. A newer iRefinedX GitHub Release is available${info.prerelease ? " on the experimental channel" : ""}.`;
 
     const actions = document.createElement("div");
     actions.className = "iref-update-note-actions";
 
     const helpText = document.createElement("span");
     helpText.textContent =
-      "Download the latest release zip, extract it, then reload the unpacked extension.";
+      "Download the newer iRefinedX release package or installer, close the current app, update it, then reopen.";
 
     const button = document.createElement("button");
     button.type = "button";
@@ -159,7 +161,7 @@ async function initSettingsPanel(activate = true) {
           <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
         </svg>
         <h6 class="modal-title" data-testid="modal-title">
-          iRefined
+          iRefinedX
         </h6>
       </div>
       <div
@@ -191,12 +193,12 @@ async function initSettingsPanel(activate = true) {
                     <strong>Settings</strong>
                   </h1>
                   <p class="m-b-1">
-                    This browser build focuses on members-ng UI helpers. Launching
-                    and joining sessions still hand off to the local iRacing app.
+                    iRefinedX augments the official local iRacing UI. Launching,
+                    joining and viewer flows still use the native iRacing local stack.
                   </p>
                   <div id="iref-update-note" class="iref-update-note hidden"></div>
                   <h4 class="m-b-1">
-                    <strong>Experimental Web Tools</strong>
+                    <strong>Desktop UI Tools</strong>
                   </h4>
                   <label htmlFor="" class="iref-setting">
                     <i
@@ -227,6 +229,19 @@ async function initSettingsPanel(activate = true) {
                   <label htmlFor="" class="iref-setting">
                     <i
                       class="icon-information text-info"
+                      title="Hide the session JSON export buttons shown on Official, Hosted and Leagues pages, including the all-sessions export buttons for Hosted and Leagues."
+                    ></i>
+                    Hide go-racing JSON export buttons
+                    <input
+                      type="checkbox"
+                      name="hide-go-racing-json-export-buttons"
+                      checked={settings["hide-go-racing-json-export-buttons"]}
+                      onChange={handleChange}
+                    />
+                  </label>
+                  <label htmlFor="" class="iref-setting">
+                    <i
+                      class="icon-information text-info"
                       title="Adds queue buttons to the next race card and session list to automatically register when the matching race session appears. You must select a car to queue with. Clicking an active queue button again removes it."
                     ></i>
                     Queue system for future sessions
@@ -234,19 +249,6 @@ async function initSettingsPanel(activate = true) {
                       type="checkbox"
                       name="auto-register"
                       checked={settings["auto-register"]}
-                      onChange={handleChange}
-                    />
-                  </label>
-                  <label htmlFor="" class="iref-setting">
-                    <i
-                      class="icon-information text-info"
-                      title="When enabled, queueing a multiclass series without a saved car will ask which car to use. When disabled, queueing without a car selection shows 'Choose a car!' instead."
-                    ></i>
-                    Prompt for car when queueing
-                    <input
-                      type="checkbox"
-                      name="queue-car-prompt"
-                      checked={settings["queue-car-prompt"]}
                       onChange={handleChange}
                     />
                   </label>
@@ -322,26 +324,13 @@ async function initSettingsPanel(activate = true) {
                   <label htmlFor="" class="iref-setting">
                     <i
                       class="icon-information text-info"
-                      title="Show or hide the V4 Intelligence Center on the dashboard page. It focuses on member progress, awards, credits and recent activity."
+                      title="Show or hide the Intelligence Center on the dashboard page. It focuses on member progress, awards, credits and recent activity."
                     ></i>
                     Dashboard Intelligence Center
                     <input
                       type="checkbox"
                       name="dashboard-intelligence-center"
                       checked={settings["dashboard-intelligence-center"]}
-                      onChange={handleChange}
-                    />
-                  </label>
-                  <label htmlFor="" class="iref-setting">
-                    <i
-                      class="icon-information text-info"
-                      title="Show or hide the financial snapshot widget on the main dashboard page. When left on, the values still stay hidden until you reveal them."
-                    ></i>
-                    Dashboard financial widget
-                    <input
-                      type="checkbox"
-                      name="dashboard-purchase-summary"
-                      checked={settings["dashboard-purchase-summary"]}
                       onChange={handleChange}
                     />
                   </label>
@@ -486,6 +475,23 @@ async function initSettingsPanel(activate = true) {
     }
   };
 
+  const bindTrigger = (trigger) => {
+    if (!trigger || trigger === boundTrigger) {
+      return;
+    }
+
+    if (boundTrigger) {
+      boundTrigger.removeEventListener("click", handleClick);
+    }
+
+    trigger.addEventListener("click", handleClick);
+    boundTrigger = trigger;
+  };
+
+  const bindExistingTrigger = () => {
+    bindTrigger($(".iref-settings-trigger"));
+  };
+
   const menuButtonEl = (
     <button
       type="button"
@@ -511,16 +517,24 @@ async function initSettingsPanel(activate = true) {
         <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0" />
         <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5" />
       </svg>
-      <span>iRefined</span>
+      <span>iRefinedX</span>
     </button>
   );
 
-  if (!$(".iref-settings-trigger")) {
-    const toolbar = $(".iref-bar-right");
+  document.addEventListener("iref:status-bar-ready", bindExistingTrigger);
 
-    if (toolbar) {
-      toolbar.appendChild(menuButtonEl);
-    }
+  const existingTrigger = $(".iref-settings-trigger");
+
+  if (existingTrigger) {
+    bindTrigger(existingTrigger);
+    return;
+  }
+
+  const toolbar = $(".iref-bar-right");
+
+  if (toolbar) {
+    toolbar.appendChild(menuButtonEl);
+    bindTrigger(toolbar.querySelector(".iref-settings-trigger"));
   }
 }
 

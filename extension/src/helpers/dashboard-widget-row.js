@@ -1,3 +1,12 @@
+function syncDashboardWidgetRowMode(row) {
+  if (!row) {
+    return;
+  }
+
+  const visibleChildren = [...row.children].filter((child) => child.nodeType === Node.ELEMENT_NODE);
+  row.classList.toggle("iref-dashboard-widget-row-single", visibleChildren.length <= 1);
+}
+
 export function ensureDashboardWidgetRow() {
   const scroll = document.querySelector("#scroll");
 
@@ -26,6 +35,10 @@ export function ensureDashboardWidgetRow() {
     parent.prepend(row);
   }
 
+  syncDashboardWidgetRowMode(row);
+  queueMicrotask(() => {
+    syncDashboardWidgetRowMode(row);
+  });
   return row;
 }
 
@@ -38,5 +51,8 @@ export function cleanupDashboardWidgetRow() {
 
   if (row.children.length === 0) {
     row.remove();
+    return;
   }
+
+  syncDashboardWidgetRowMode(row);
 }

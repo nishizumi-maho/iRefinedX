@@ -1,19 +1,19 @@
-# iRefined Browser Wiki
+# iRefinedX Wiki
 
-iRefined Browser is a browser-first extension for the iRacing `members-ng` website. This wiki is the detailed technical reference for the project.
+`iRefinedX` is a desktop-first wrapper around the official local iRacing UI.
+
+The project does not try to rebuild the iRacing app from scratch. Instead, it starts the installed `iRacingUI.exe`, patches the official Electron runtime just enough to add instrumentation and interop hooks, then injects the `iRefinedX` enhancement layer into the real `members-ng` pages the local UI already loads.
 
 ## What This Wiki Covers
 
-- installation and update flow
-- project architecture
-- feature-by-feature behavior
-- dashboard tools
-- Order History analysis and the storage bridge
-- settings and storage keys
-- build, packaging, and release workflows
-- privacy, data handling, and known limitations
-- troubleshooting
-- file-by-file source map
+- how the launcher boots and patches the official local UI
+- where the injected feature layer lives and how it is built
+- which features are still active in the current product
+- how queue persistence, native register/withdraw and session exports behave
+- what data is stored locally
+- how GitHub Releases updates are checked and surfaced
+- what is deliberately excluded from the product
+- how CI, release packaging and wiki publication are wired
 
 ## Recommended Reading Order
 
@@ -21,33 +21,39 @@ iRefined Browser is a browser-first extension for the iRacing `members-ng` websi
 2. [Architecture](Architecture)
 3. [Feature Index](Feature-Index)
 4. [Session Registration and Queue](Session-Registration-and-Queue)
-5. [Dashboard Budget Snapshot](Dashboard-Budget-Snapshot)
-6. [Dashboard Intelligence Center](Dashboard-Intelligence-Center)
-7. [Session Sharing and Exports](Session-Sharing-and-Exports)
-8. [Order History and Data Bridge](Order-History-and-Data-Bridge)
-9. [Settings and Storage](Settings-and-Storage)
-10. [Privacy, Security, and Data Handling](Privacy-Security-and-Data-Handling)
-11. [Build, Release, and CI](Build-Release-and-CI)
-12. [Source Map](Source-Map)
-13. [Troubleshooting](Troubleshooting)
+5. [Dashboard Intelligence Center](Dashboard-Intelligence-Center)
+6. [Session Sharing and Exports](Session-Sharing-and-Exports)
+7. [Settings and Storage](Settings-and-Storage)
+8. [Privacy, Security, and Data Handling](Privacy-Security-and-Data-Handling)
+9. [Build, Release, and CI](Build-Release-and-CI)
+10. [Source Map](Source-Map)
+11. [Troubleshooting](Troubleshooting)
 
-## Project Scope
+## Current Product Scope
 
-This fork deliberately stays on the website side:
+`iRefinedX` currently focuses on:
 
-- it injects into `members-ng`
-- it adds UI helpers on pages the user is already viewing
-- it does not attach to the installed sim client
-- it does not automate driving inputs
-- it does not bypass authentication or local-app handoff behavior
+- preserving the native iRacing UI and its local-service behavior
+- adding queue tools for future sessions
+- leaving native `Register` and `Withdraw` actions in place for already-open sessions
+- keeping the queue bar persistent and visible across app restarts
+- adding the dashboard `Intelligence Center`
+- providing session JSON sharing and export tools where the local UI supports them
+- surfacing new GitHub releases to the user through an obvious popup
 
-## Stable Browser Target
+## Current Exclusions
 
-The stable release target is Chromium-based browsers using the unpacked extension package from GitHub Releases.
+The following are intentionally not part of the current desktop release line:
+
+- the old browser-first distribution model
+- the historical financial widget line
+- old changelog bundles from earlier experimental branches
+- silent self-updating or background install mutation
+- queue execution while the app is closed
 
 ## Repository Pointers
 
-- Repository root: `https://github.com/nishizumi-maho/irefinedWEB`
-- Releases: `https://github.com/nishizumi-maho/irefinedWEB/releases`
-- Changelog: `https://github.com/nishizumi-maho/irefinedWEB/blob/main/CHANGELOG.md`
-- Documentation source in the repo: `https://github.com/nishizumi-maho/irefinedWEB/tree/main/docs`
+- Repository root: `https://github.com/nishizumi-maho/iRefinedX`
+- Releases: `https://github.com/nishizumi-maho/iRefinedX/releases`
+- Wiki source in repo: `docs/wiki/`
+- Local runtime research: `docs/research/IRACING_UI_LOCAL_ANALYSIS.md`

@@ -14,7 +14,7 @@ export default defineConfig({
     __IREF_REPO_URL__: JSON.stringify(repoUrl),
     __IREF_REPO_SLUG__: JSON.stringify(repoSlug),
     __IREF_RELEASES_URL__: JSON.stringify(`${repoUrl}/releases/latest`),
-    __IREF_RELEASES_API_URL__: JSON.stringify(`https://api.github.com/repos/${repoSlug}/releases/latest`),
+    __IREF_RELEASES_API_URL__: JSON.stringify(`https://api.github.com/repos/${repoSlug}/releases?per_page=10`),
   },
   plugins: [
     viteStaticCopy({
@@ -22,7 +22,6 @@ export default defineConfig({
         { src: "public/manifest.json", dest: "." },
         { src: "public/icons/*", dest: "icons" },
         { src: "public/bridge.js", dest: "." },
-        { src: "public/account-main.js", dest: "." },
       ],
     }),
   ],

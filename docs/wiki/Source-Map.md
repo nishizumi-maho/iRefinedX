@@ -1,96 +1,49 @@
 # Source Map
 
-This page is a practical map of where the important code lives.
+This page is a quick navigation guide for the current repository.
 
-## Repository Root
+## Root
 
-| Path | Purpose |
-| --- | --- |
-| `README.md` | concise repository entry point |
-| `CHANGELOG.md` | root historical changelog |
-| `docs/` | repository-side documentation |
-| `extension/` | browser extension source, build config, and package metadata |
+- `README.md`: concise product overview
+- `LICENSE`: MIT license
+- `THIRD_PARTY_NOTICES.md`: third-party notice inventory
+- `docs/`: wiki source and research notes
+- `extension/`: injected enhancement layer
+- `desktop/`: desktop launcher and runtime patching
 
-## `.github/`
+## Desktop Runtime
 
-| Path | Purpose |
-| --- | --- |
-| `.github/workflows/extension.yml` | build validation workflow |
-| `.github/workflows/release.yml` | release packaging workflow |
-| `.github/workflows/wiki-sync.yml` | publishes `docs/wiki/` to the GitHub wiki |
+- `desktop/main.cjs`: launcher entry point
+- `desktop/prepare-runtime.cjs`: extracts and patches the official iRacing UI runtime
+- `desktop/official-runtime-bootstrap-source.cjs`: runtime instrumentation, native interop, download handling and desktop update popup
+- `desktop/README.md`: desktop runtime notes
 
-## `docs/`
+## Injected Web Layer
 
-| Path | Purpose |
-| --- | --- |
-| `docs/README.md` | documentation index |
-| `docs/changelogs/` | version-specific release notes |
-| `docs/research/` | deeper analysis/reference documents |
-| `docs/wiki/` | versioned wiki source pages |
+- `extension/src/main.js`: feature bootstrap
+- `extension/src/feature-manager.js`: feature registration and rerun coordination
+- `extension/public/manifest.json`: build metadata for the injected layer
 
-## `extension/public/`
+## Feature Hotspots
 
-| Path | Purpose |
-| --- | --- |
-| `manifest.json` | extension manifest and content-script entry declarations |
-| `bridge.js` | narrow storage bridge for page-world scripts |
-| `account-main.js` | Order History parsing and derived financial summary generation |
+- `extension/src/features/auto-register.js`: queue, register, withdraw and persistence logic
+- `extension/src/features/status-bar.jsx`: lower queue/status bar
+- `extension/src/features/intelligence-center.js`: dashboard Intelligence Center
+- `extension/src/features/go-racing-export.js`: per-session export actions
+- `extension/src/features/share-hosted-session.jsx`: Hosted/League wizard tools
+- `extension/src/features/share-test-session.jsx`: Test Drive sharing
+- `extension/src/features/update-notice.js`: in-app update notice
+- `extension/src/features/settings-panel.jsx`: settings UI
 
-## `extension/src/`
+## Helper Hotspots
 
-| Path | Purpose |
-| --- | --- |
-| `main.js` | browser entry point that loads features |
-| `feature-manager.js` | feature registry and enable/disable orchestration |
+- `extension/src/helpers/settings.js`: default settings and persistence
+- `extension/src/helpers/updates.js`: GitHub release check for the injected layer
+- `extension/src/helpers/download.js`: save/export helpers
+- `extension/src/helpers/websockets.js`: websocket state helper
+- `extension/src/helpers/webui-locale.js`: language-aware button/session label matching
 
-## `extension/src/features/`
+## Docs
 
-| Path | Purpose |
-| --- | --- |
-| `status-bar.jsx` | visible iRefined bar and current session/queue UI |
-| `auto-register.js` | register, withdraw, queue, and queue handoff logic |
-| `better-join-button.js` | join/watch/spot button improvements where supported |
-| `settings-panel.jsx` | settings UI and update information |
-| `update-notice.js` | GitHub release update detection |
-| `purchase-summary.js` | Budget Snapshot widget |
-| `intelligence-center.js` | Intelligence Center widget |
-| `share-hosted-session.jsx` | Hosted/League import-export helpers |
-| `share-test-session.jsx` | Test Drive sharing helpers |
-| `go-racing-export.js` | Official session export helpers |
-| `no-toasts.js` | hide toasts tweak |
-| `auto-close-toasts.js` | auto-close toasts tweak |
-| `no-sidebars.js` | sidebar suppression tweak |
-| `collapse-menu.js` | menu collapse tweak |
-| `logger.js` | inline debug log panel |
-
-## `extension/src/helpers/`
-
-| Path | Purpose |
-| --- | --- |
-| `settings.js` | default settings and local persistence |
-| `dom-observer.js` | mutation-based feature activation |
-| `react-resolver.js` | React prop/state resolution from DOM nodes |
-| `websockets.js` | websocket-assisted live state refresh behavior |
-| `updates.js` | release checking helpers |
-| `sound.js` | queue notification sound helpers |
-| `bridge-storage.js` | safe accessors for the page bridge keys |
-| `purchase-analytics.js` | purchase summary loading, refresh, and estimates |
-| `price-curiosities.js` | rotating financial curiosity generator |
-| `dashboard-widget-row.js` | shared dashboard widget row anchoring |
-| `intelligence-analytics.js` | dashboard and activity intelligence helpers |
-| `membership-analytics.js` | membership/account summary helpers |
-| `download.js` | browser download helpers |
-| `json-safe.js` | safe JSON parsing/formatting helpers |
-| `weather-import.js` | session weather normalization during import |
-| `car-manuals.js` | manual lookup data for supported car cards |
-
-## Styling
-
-Most features have a sibling CSS module in `extension/src/features/`.
-
-Pattern:
-
-- logic in `feature-name.js` or `feature-name.jsx`
-- styling in `feature-name.css`
-
-The bundle process rolls those styles into the extension stylesheet delivered to the target pages.
+- `docs/wiki/`: GitHub wiki source
+- `docs/research/IRACING_UI_LOCAL_ANALYSIS.md`: runtime architecture reference

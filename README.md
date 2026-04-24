@@ -1,98 +1,99 @@
-# iRefined Browser
+# iRefinedX
 
-Browser-first helpers for the iRacing `members-ng` website.
+`iRefinedX` is a Windows desktop launcher that reuses the installed local iRacing UI and injects the `iRefinedX` enhancement layer into the official runtime.
 
-This repository is a website-focused fork/adaptation of iRefined. It adds workflow and dashboard helpers directly on top of the logged-in iRacing web UI.
+It is not a fake clone of the iRacing UI. It boots the real local Electron app, keeps the native preload, local service, viewer integration and session handoff, then layers the `iRefinedX` features on top.
 
 ## Documentation
 
-- Wiki: [github.com/nishizumi-maho/irefinedWEB/wiki](https://github.com/nishizumi-maho/irefinedWEB/wiki)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
-- Version release notes: [docs/changelogs](docs/changelogs)
+- Wiki: [github.com/nishizumi-maho/iRefinedX/wiki](https://github.com/nishizumi-maho/iRefinedX/wiki)
 - Research/reference docs: [docs/research](docs/research)
-- Releases: [github.com/nishizumi-maho/irefinedWEB/releases](https://github.com/nishizumi-maho/irefinedWEB/releases)
+- Releases: [github.com/nishizumi-maho/iRefinedX/releases](https://github.com/nishizumi-maho/iRefinedX/releases)
+- Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
 
-The wiki is the primary technical reference. It documents the architecture, features, storage model, privacy boundaries, troubleshooting, and source map in detail.
-
-## Install
-
-1. Open [Releases](https://github.com/nishizumi-maho/irefinedWEB/releases).
-2. Download the newest Chromium package, such as `irefined-browser-chromium-v6.zip`.
-3. Extract the zip to a permanent folder.
-4. Open `chrome://extensions` in Chrome or `edge://extensions` in Edge.
-5. Enable `Developer mode`.
-6. Click `Load unpacked`.
-7. Select the extracted folder that contains `manifest.json`.
-8. Open `https://members-ng.iracing.com/web/racing/home/dashboard`.
+The wiki is the primary technical reference. It documents the runtime architecture, feature behavior, storage model, privacy boundaries, troubleshooting and release flow in detail.
 
 ## What It Does
 
-- register and withdraw helpers for supported official series pages
-- queue support for race and qualifying sessions
-- practice registration where the site exposes a valid practice target
-- dashboard Budget Snapshot and Intelligence Center widgets
-- hosted and league session import/export helpers
-- test drive session sharing helpers
-- update notice when a newer GitHub release is available
-- browser-side UI quality-of-life tweaks for `members-ng`
+- boots the official local iRacing UI instead of replacing it
+- keeps native register, withdraw, launch and viewer behavior
+- adds queue tools for future sessions while preserving native register buttons for open sessions
+- keeps the lower queue/status bar visible across app restarts
+- adds the full-width `Intelligence Center` dashboard widget
+- provides session JSON sharing and export helpers where the local UI supports them
+- checks GitHub Releases and warns the user when a newer `iRefinedX` version exists
 
-## ✨ At A Glance
+## What It Does Not Do
 
-- 🟢 Register and withdraw from supported Official series pages
-- ⏳ Queue future sessions and let the extension handle the switch near race time
-- 💵 Check recent and total content spend privately from the dashboard
-- 📦 Export/import `session.json` for Hosted and League setup reuse
-- 🔔 Get a queue notification sound when the new registration lands
-- 🧰 Apply small UI quality-of-life tweaks directly on `members-ng`
+- it does not replace the installed iRacing binaries with a custom client
+- it does not bypass iRacing authentication
+- it does not automate driving inputs
+- it does not keep queue automation alive while the app is closed
+- it does not ship the iRacing UI itself inside this repository
 
-## 🌐 Browser Support
+## Requirements
 
-### Chromium browsers ✅
+- Windows
+- local iRacing installation with the official `iRacingUI.exe`
+- Node.js for source-based local builds
+- an authenticated iRacing account
 
-The current release package is built for Chromium browsers.
+## Local Build And Run
 
-That includes the easiest targets:
+1. Build the enhancement layer:
+   - `npm --prefix extension install`
+   - `npm --prefix extension run build`
+2. Install launcher dependencies:
+   - `npm --prefix desktop install`
+3. Start `iRefinedX`:
+   - `npm --prefix desktop start`
 
-- Chrome
-- Edge
-- Brave
-- Vivaldi
-- Opera
+The launcher patches the extracted local iRacing UI runtime in place, then starts the official `iRacingUI.exe`.
 
-## Development
+## Installer Model
 
-The extension source lives in [`extension/`](extension).
+The Windows installer ships `iRefinedX` as its own app and shortcut. It does not overwrite the official iRacing shortcut or replace the official installation entry point.
 
-Typical local workflow:
+On install, the user can choose:
 
-1. `cd extension`
-2. `npm install`
-3. `npm run build`
-4. load the built/unpacked extension in a Chromium browser
+- create a desktop shortcut
+- start `iRefinedX` automatically with Windows
+
+On first launch, `iRefinedX` tries to find the official iRacing UI automatically by checking:
+
+- the saved `iRefinedX` UI path cache
+- the `iracing://` protocol association in the Windows registry
+- common default install paths such as `C:\Program Files (x86)\iRacing\ui` and `D:\Program Files (x86)\iRacing\ui`
+
+If none of those match, the app opens a folder picker so the user can point `iRefinedX` at the installed iRacing directory once, then reuses that location on later launches.
+
+## Update Model
+
+`iRefinedX` checks [GitHub Releases](https://github.com/nishizumi-maho/iRefinedX/releases) and shows a visible popup when a newer version is available.
+
+The updater only notifies. It does not silently self-update. The intended release artifact is a downloadable `iRefinedX` package or installer published on GitHub Releases.
+
+## Security And Privacy Summary
+
+- `npm audit --omit=dev --prefix extension`: clean
+- `npm audit --omit=dev --prefix desktop`: clean
+- tracked source was scanned for obvious secrets and credentials
+- runtime logs, extracted app files, build output and local analysis folders are gitignored
+- queue state and settings are stored locally on the machine running the app
 
 ## Repository Layout
 
+- [`desktop/`](desktop): launcher, runtime patching and desktop-specific instrumentation
 - [`extension/`](extension): browser extension source and build config
-- [`docs/wiki/`](docs/wiki): versioned source for the GitHub wiki
-- [`docs/changelogs/`](docs/changelogs): version-specific release notes
+- [`docs/wiki/`](docs/wiki): source for the GitHub wiki
 - [`docs/research/`](docs/research): deeper analysis/reference material
+- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): third-party notices kept with the MIT-licensed source tree
 
 ## Support and Issues
 
 - Use GitHub Issues for bug reports and feature requests.
-- Include the extension version, browser, affected page, and a screenshot when the issue is UI-related.
-
-## Scope
-
-This project is browser-only.
-
-It does not:
-
-- attach to the installed sim client
-- automate driving inputs
-- bypass authentication
-- replace iRacing's local app launch handoff
+- Include the `iRefinedX` version, the iRacing UI version, the affected page and a screenshot when the issue is UI-related.
 
 ## License and Affiliation
 
-This repository and its contributors are not affiliated with iRefined or iRacing.
+This repository is MIT licensed. `iRefinedX` is not affiliated with iRacing.

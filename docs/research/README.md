@@ -1,7 +1,7 @@
 # Research and Reference
 
-This directory keeps deeper analysis documents that are useful to preserve in the repository but do not belong in the concise `README.md`.
+This directory keeps deeper analysis documents that are worth preserving in the repository but do not belong in the concise `README.md`.
 
 ## Files
 
-- [`V4_SITE_DEEP_ANALYSIS.md`](V4_SITE_DEEP_ANALYSIS.md): large members-ng site analysis used to identify data exposure, widget opportunities, and browser-side feature scope.
+- [`IRACING_UI_LOCAL_ANALYSIS.md`](IRACING_UI_LOCAL_ANALYSIS.md): desktop-first analysis of the installed local iRacing UI runtime, preload bridge, local service integration and the reason `iRefinedX` boots the official app instead of recreating it.

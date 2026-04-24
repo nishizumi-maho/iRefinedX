@@ -11,6 +11,7 @@
   const allowedStaticKeys = new Set([
     "iref_purchase_history_summary",
     "iref_missing_content_summary",
+    "iref_membership_summary",
   ]);
   const purchaseHistorySessionKeyPrefix = "iref_purchase_history_summary::";
 

@@ -54,7 +54,7 @@ function ensureUpdatePopup() {
       >
         ×
       </button>
-      <div class="iref-update-popup-label">Update available</div>
+      <div class="iref-update-popup-label">iRefinedX update available</div>
       <h3 id="iref-update-popup-title" class="iref-update-popup-title"></h3>
       <p id="iref-update-popup-description" class="iref-update-popup-description"></p>
       <div class="iref-update-popup-versions">
@@ -68,14 +68,15 @@ function ensureUpdatePopup() {
         </div>
       </div>
       <p class="iref-update-popup-help">
-        Download the latest release zip, extract it, then reload the unpacked extension.
+        Download the newer iRefinedX release package or installer, close the current app,
+        update it, then reopen.
       </p>
       <div class="iref-update-popup-actions">
         <button type="button" class="iref-update-popup-secondary">
           Close
         </button>
         <button type="button" class="iref-update-popup-primary">
-          Open latest release
+          Open GitHub release
         </button>
       </div>
     </div>
@@ -124,7 +125,7 @@ function syncPopupContent(info = getCachedUpdateInfo()) {
   popup.querySelector("#iref-update-popup-title").textContent =
     `${info.latestTag} is ready`;
   popup.querySelector("#iref-update-popup-description").textContent =
-    `You are using ${CURRENT_DISPLAY_VERSION}. A newer GitHub release is available for download.`;
+    `You are using ${CURRENT_DISPLAY_VERSION}. A newer iRefinedX GitHub release is available${info.prerelease ? " on the experimental channel" : ""}.`;
   popup.querySelector("#iref-update-popup-current-version").textContent =
     CURRENT_DISPLAY_VERSION;
   popup.querySelector("#iref-update-popup-latest-version").textContent =
@@ -198,7 +199,7 @@ function syncButton(info = getCachedUpdateInfo()) {
 
   button.classList.remove("hidden");
   button.textContent = `Update ${info.latestTag}`;
-  button.title = `A newer iRefined release is available on GitHub: ${info.latestTag}`;
+  button.title = `A newer iRefinedX release is available on GitHub: ${info.latestTag}`;
 }
 
 async function init(activate = true) {

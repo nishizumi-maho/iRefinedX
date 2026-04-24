@@ -1,5 +1,5 @@
 window.__irefinedLoaded = true;
-console.info("[iRefined] loaded");
+console.info("[iRefinedX] loaded");
 
 // Setup
 import "./helpers/websockets.js";
@@ -19,4 +19,3 @@ import "./features/go-racing-export.js";
 import "./features/better-join-button.js";
 import "./features/auto-register.js";
 import "./features/intelligence-center.js";
-import "./features/purchase-summary.js";

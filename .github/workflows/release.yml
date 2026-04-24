@@ -1,4 +1,4 @@
-name: release-package
+name: release-installer
 
 on:
   release:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   package:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -21,9 +21,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: extension/package-lock.json
+          cache-dependency-path: |
+            extension/package-lock.json
+            desktop/package-lock.json
 
-      - name: Install dependencies
+      - name: Install extension dependencies
         run: npm ci
         working-directory: extension
 
@@ -31,24 +33,29 @@ jobs:
         run: npm run build
         working-directory: extension
 
-      - name: Package Chromium release zip
-        run: |
-          VERSION="${{ github.event.release.tag_name }}"
-          PACKAGE_DIR="release/irefined-browser-chromium-$VERSION"
-          mkdir -p "$PACKAGE_DIR"
-          cp -R extension/dist/. "$PACKAGE_DIR/"
-          cd release
-          zip -r "irefined-browser-chromium-$VERSION.zip" "irefined-browser-chromium-$VERSION"
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: desktop
+
+      - name: Validate desktop runtime scripts
+        run: npm run check
+        working-directory: desktop
+
+      - name: Build Windows installer
+        run: npm run prepare:package && electron-builder --win nsis --publish never
+        working-directory: desktop
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: irefined-browser-chromium-${{ github.event.release.tag_name }}
-          path: release/irefined-browser-chromium-${{ github.event.release.tag_name }}.zip
+          name: iRefinedX-installer-${{ github.event.release.tag_name || github.run_number }}
+          path: |
+            desktop/dist/iRefinedX-Setup-*.exe
+            desktop/dist/iRefinedX-Setup-*.exe.blockmap
 
-      - name: Attach asset to GitHub Release
+      - name: Attach assets to GitHub Release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" "release/irefined-browser-chromium-${{ github.event.release.tag_name }}.zip" --clobber
+          gh release upload "${{ github.event.release.tag_name }}" desktop/dist/iRefinedX-Setup-*.exe desktop/dist/iRefinedX-Setup-*.exe.blockmap --clobber

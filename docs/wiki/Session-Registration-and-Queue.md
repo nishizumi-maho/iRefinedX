@@ -1,80 +1,82 @@
 # Session Registration and Queue
 
-The session workflow is primarily implemented by `extension/src/features/auto-register.js` and surfaced by `extension/src/features/status-bar.jsx`.
+This page documents how `iRefinedX` handles native registration and future-session queueing.
 
-## Main Responsibilities
+## Source Of Truth
 
-`auto-register.js` is responsible for:
+`iRefinedX` now follows a simple rule:
 
-- finding current session data on Go Racing pages
-- deciding whether a row or main card should show `Register`, `Withdraw`, `Queue`, or the native fallback
-- persisting queued sessions
-- tracking the current registration state
-- timing register attempts near the open window
-- handling displacement when a queued session should replace an existing registration
+- if the session is already open for direct registration, use the native iRacing UI buttons
+- if the session is still closed, offer `Queue`
 
-`status-bar.jsx` is responsible for:
+That rule keeps the current release much closer to the official UI.
 
-- rendering the visible registration bar
-- showing current queued items
-- exposing quick queue removal / activation actions
-- showing countdowns and browser-managed session status
+## Current Behavior
 
-## Queue State
+### Open session
 
-Queue data is persisted browser-side so the user can leave one series page and still keep the queued item visible in the iRefined bar.
+For the currently open race or qualifying slot:
 
-The queue system supports:
+- the top card keeps the native `Register`
+- the lower table/list also keeps the native action
+- `iRefinedX` does not replace those buttons with its own custom register button
 
-- race queue items
-- qualifying queue items
-- labels such as `(R)` and `(Q)` in queue displays
-- optional re-queue behavior for displaced registrations
+### Future session
 
-## Registration State Model
+For future sessions whose registration has not opened yet:
 
-The extension tracks a browser-side current registration state so the UI can react faster than waiting for a full page refresh.
+- `iRefinedX` can expose `Queue`
+- the queue stores the intended session and selected car context
+- once the target session becomes actionable, the queue flow can register it
 
-Key exported helpers from `auto-register.js`:
+## Withdraw Behavior
 
-- `clearRegistrationState`
-- `isCurrentPageWithdrawPending`
-- `getCurrentRegistrationState`
-- `confirmRegistrationState`
-- `getCurrentTime`
-- `requestCurrentSessionWithdraw`
-- `activateQueueItem`
-- `removeQueuedSession`
+Withdraw is handled against the real local UI/session state. The current release hardens this by treating websocket pushes as the truth source when possible, so `registering` or `withdrawing` does not remain stuck only because the DOM lagged.
 
-These functions let the status bar and page controls talk to the same underlying state.
+## Queue Persistence
 
-## Current Card vs Queue Area
+Queue state is stored locally and survives app restarts.
 
-V5.1 keeps an intentional distinction:
+Current persistence goals:
 
-- the main session card prefers the direct action for the current/open session
-- the queue area lists upcoming queue targets
+- the queue bar is hydrated as soon as the app opens
+- the user does not need to revisit the original series page to see pending queue entries
+- closing and reopening the app does not erase the queue
 
-This keeps `Register` and `Withdraw` obvious while still allowing users to queue future sessions.
+## Important Offline Boundary
 
-## Practice Registration
+If the app is closed when a queued session reaches its registration time:
 
-Practice registration is only added when the site exposes enough real data to support it safely.
+- `iRefinedX` does not register that session in the background
+- reopening the app later still shows the queue entry
+- the queue entry is not retroactively executed just because the app reopened
 
-The extension does not invent practice targets. It only decorates what the page already makes available.
+This is intentional. The queue engine only runs while the UI is actually open.
 
-## Current Limitations
+## Bottom Queue Bar
 
-- everything still depends on the iRacing page exposing usable session data
-- the extension cannot register for something the site does not expose
-- final launch/join still follows the site's local-app handoff behavior
-- DOM changes on iRacing's side can break selectors or data resolution
+The lower queue bar is a compact persistent status strip. Current behavior:
 
-## Related Files
+- centered at the bottom of the UI
+- grows horizontally as more sessions are queued
+- orders sessions from nearest to farthest, left to right
+- keeps the `IREF` control on the far right
+- exposes the settings trigger even when the bar is compact
+
+## Optional Queue Settings
+
+Current queue-related settings include:
+
+- enable/disable queue tools
+- re-queue displaced registration
+- queue registration sound
+- queue sound volume
+
+## Relevant Files
 
 - `extension/src/features/auto-register.js`
+- `extension/src/features/auto-register.css`
 - `extension/src/features/status-bar.jsx`
-- `extension/src/features/better-join-button.js`
+- `extension/src/features/status-bar.css`
 - `extension/src/helpers/websockets.js`
-- `extension/src/helpers/react-resolver.js`
-- `extension/src/helpers/sound.js`
+- `extension/src/helpers/webui-locale.js`

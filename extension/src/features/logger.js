@@ -19,7 +19,7 @@ export function log(message) {
     logLine.append(timeLabel, document.createTextNode(' - ' + String(message)));
     logContainer.appendChild(logLine);
     logContainer.scrollTop = logContainer.scrollHeight;
-    console.info('[iRefined]', String(message));
+    console.info('[iRefinedX]', String(message));
 
 }
 

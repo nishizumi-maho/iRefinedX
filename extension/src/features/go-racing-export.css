@@ -5,6 +5,11 @@
   margin-top: 12px;
 }
 
+.iref-export-actions:first-child {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
 .iref-export-btn {
   appearance: none;
   border: 1px solid rgba(255, 255, 255, 0.14);

@@ -8,6 +8,9 @@ const WEBUI_LABELS = {
     lastRace: "Last Race",
     upNext: "Up Next",
     availableSessionsDescription: "Register for ongoing or upcoming sessions.",
+    registerAction: "Register",
+    withdrawAction: "Withdraw",
+    sessionLaunchActions: ["Join Race", "View in iRacing", "Launch iRacing"],
   },
   "es-ES": {
     nextRacePrefix: "Carrera siguiente @",
@@ -16,6 +19,13 @@ const WEBUI_LABELS = {
     lastRace: "Última carrera",
     upNext: "Siguiente",
     availableSessionsDescription: "Regístrate para una sesión próxima o en curso.",
+    registerAction: "Registrarse",
+    withdrawAction: "Retirarse",
+    sessionLaunchActions: [
+      "Unirse a la carrera",
+      "Ver en iRacing",
+      "Iniciar iRacing",
+    ],
   },
   "de-DE": {
     nextRacePrefix: "Nächstes Rennen @",
@@ -25,6 +35,13 @@ const WEBUI_LABELS = {
     upNext: "Up Next",
     availableSessionsDescription:
       "Registrieren für laufende oder bevorstehende Sitzungen.",
+    registerAction: "Registrieren",
+    withdrawAction: "Abmelden",
+    sessionLaunchActions: [
+      "Rennen beitreten",
+      "In iRacing anzeigen",
+      "iRacing starten",
+    ],
   },
   "fr-FR": {
     nextRacePrefix: "Prochaine course @",
@@ -34,6 +51,13 @@ const WEBUI_LABELS = {
     upNext: "À venir",
     availableSessionsDescription:
       "Inscrivez-vous à des sessions en cours ou à venir.",
+    registerAction: "S'inscrire",
+    withdrawAction: "Se retirer",
+    sessionLaunchActions: [
+      "Rejoindre la course",
+      "Voir dans iRacing",
+      "Lancer iRacing",
+    ],
   },
   "it-IT": {
     nextRacePrefix: "Prossima gara @",
@@ -43,6 +67,13 @@ const WEBUI_LABELS = {
     upNext: "Prossimamente",
     availableSessionsDescription:
       "Iscriviti alle sessioni in corso o a quelle in arrivo.",
+    registerAction: "Iscriviti",
+    withdrawAction: "Ritirati",
+    sessionLaunchActions: [
+      "Unisciti alla gara",
+      "Vedi in iRacing",
+      "Avvia iRacing",
+    ],
   },
   "pt-PT": {
     nextRacePrefix: "Próxima corrida @",
@@ -52,6 +83,13 @@ const WEBUI_LABELS = {
     upNext: "A seguir",
     availableSessionsDescription:
       "Regista-te em sessões em curso ou vindouras.",
+    registerAction: "Registar",
+    withdrawAction: "Cancelar inscrição",
+    sessionLaunchActions: [
+      "Entrar na corrida",
+      "Ver no iRacing",
+      "Abrir iRacing",
+    ],
   },
   "pt-BR": {
     nextRacePrefix: "Próxima corrida @",
@@ -61,6 +99,13 @@ const WEBUI_LABELS = {
     upNext: "A seguir",
     availableSessionsDescription:
       "Inscreva-se para sessões em andamento ou nas próximas sessões.",
+    registerAction: "Inscrever-se",
+    withdrawAction: "Cancelar inscrição",
+    sessionLaunchActions: [
+      "Entrar na corrida",
+      "Ver no iRacing",
+      "Abrir iRacing",
+    ],
   },
 };
 
@@ -222,6 +267,7 @@ export function getSessionActionEntries(root = document, options = {}) {
     visibleOnly = true,
     skipButtons = [],
     skipSelectors = [],
+    dedupe = true,
   } = options;
   const skipSet = new Set(skipButtons.filter(Boolean));
   const seen = new Set();
@@ -239,6 +285,10 @@ export function getSessionActionEntries(root = document, options = {}) {
     .filter(({ props }) => {
       if (!props?.session) {
         return false;
+      }
+
+      if (!dedupe) {
+        return true;
       }
 
       const key = getSessionActionKey(props);

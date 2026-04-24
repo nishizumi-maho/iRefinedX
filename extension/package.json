@@ -1,9 +1,9 @@
 {
-  "name": "extension",
+  "name": "irefinedx-web-layer",
   "private": true,
-  "version": "6.0.0",
-  "displayVersion": "v6",
-  "repository": "https://github.com/nishizumi-maho/irefinedWEB",
+  "version": "1.0.0",
+  "displayVersion": "v1",
+  "repository": "https://github.com/nishizumi-maho/iRefinedX",
   "type": "module",
   "scripts": {
     "dev": "vite",

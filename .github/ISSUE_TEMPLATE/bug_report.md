@@ -21,9 +21,8 @@ Steps to reproduce the behavior:
 Describe what you expected to happen.
 
 **Environment**
-- Browser:
-- Browser version:
-- Extension version:
+- App version:
+- iRacing UI version:
 - Page URL or page type:
 - Were you already registered in another session?
 - Was Queue involved?
@@ -32,7 +31,8 @@ Describe what you expected to happen.
 Please include any relevant iRefined logs.
 
 - In-page log panel screenshot or copied lines:
-- DevTools console lines prefixed with `[iRefined]`:
+- Console lines prefixed with `[iRefinedX]`:
+- Relevant `logs/*.jsonl` lines, if available:
 
 **Screenshots**
 If applicable, add screenshots to help explain your problem.

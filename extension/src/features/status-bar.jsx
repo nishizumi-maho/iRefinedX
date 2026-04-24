@@ -1,42 +1,34 @@
 import features from "../feature-manager.js";
 import {
   activateQueueItem,
-  clearRegistrationState,
-  confirmRegistrationState,
   getCurrentTime,
-  getCurrentRegistrationState,
-  isCurrentPageWithdrawPending,
+  hydratePersistentAutoRegisterState,
   removeQueuedSession,
-  requestCurrentSessionWithdraw,
 } from "./auto-register.js";
 import React from "dom-chef";
 import "./status-bar.css";
 import logo from "../assets/logo.png";
+import {
+  getWebUiLabels,
+  includesWebUiLabel,
+  startsWithWebUiLabel,
+} from "../helpers/webui-locale.js";
 
 const selector = "body";
 
 const uiRootEl = (
   <div id="iref-ui-root">
-    <div id="iref-registration-banner" className="iref-registration-banner hidden">
-      <div className="iref-registration-banner-left">
-        <div className="iref-registration-pill">Registered</div>
-        <div className="iref-registration-copy">
-          <div className="iref-registration-title"></div>
-          <div className="iref-registration-subtitle"></div>
-        </div>
-      </div>
-      <div className="iref-registration-timer hidden"></div>
-      <div className="iref-registration-banner-right"></div>
-    </div>
     <div className="iref-bar-wrapper">
       <div id="iref-bar">
-        <div className="iref-bar-left">
-          <div className="iref-logo">
-            <img src={logo} />
-          </div>
-          <div className="iref-queue-items"></div>
-        </div>
-        <div className="iref-bar-right"></div>
+        <div className="iref-queue-lane"></div>
+        <button
+          type="button"
+          className="iref-logo iref-settings-trigger iref-settings-trigger-compact"
+          aria-label="Open iRefined options"
+          tabindex="0"
+        >
+          <img src={logo} />
+        </button>
       </div>
     </div>
   </div>
@@ -78,7 +70,7 @@ function getTextLines(text = "") {
 }
 
 function findNextRaceSection() {
-  const heading = findHeading((text) => text.startsWith("Next Race @"));
+  const heading = findHeading((text) => startsWithWebUiLabel(text, "nextRacePrefix"));
 
   if (!heading) {
     return null;
@@ -86,11 +78,16 @@ function findNextRaceSection() {
 
   return findClosest(heading, (node) => {
     const text = normalizeText(node.innerText || "");
-    return text.includes("More way") || text.includes("Race Duration");
+    return includesWebUiLabel(text, "raceDuration") || /More ways?/i.test(text);
   });
 }
 
-function findAction(pattern, root = document, visibleOnly = true) {
+function matchesLabelKey(text, key) {
+  const normalizedText = normalizeText(text);
+  return getWebUiLabels(key).some((label) => normalizedText === normalizeText(label));
+}
+
+function findAction(predicate, root = document, visibleOnly = true) {
   return [...root.querySelectorAll("button, a")]
     .filter((el) => !el.closest("#iref-ui-root"))
     .filter((el) => !el.closest("#iref-top-action-row"))
@@ -98,7 +95,14 @@ function findAction(pattern, root = document, visibleOnly = true) {
     .filter((el) => !el.closest(".iref-session-register-btn"))
     .filter((el) => !el.closest(".iref-queue-btn"))
     .filter((el) => !visibleOnly || isVisible(el))
-    .find((el) => pattern.test(normalizeText(el.innerText || el.textContent || "")));
+    .find((el) => {
+      const text = normalizeText(el.innerText || el.textContent || "");
+      return predicate(text, el);
+    });
+}
+
+function findActionByLabelKey(key, root = document, visibleOnly = true) {
+  return findAction((text) => matchesLabelKey(text, key), root, visibleOnly);
 }
 
 function clickActionElement(el) {
@@ -182,18 +186,18 @@ function getSiteRegistrationState() {
 
   const nextRaceSection = findNextRaceSection();
   const withdrawAction =
-    (nextRaceSection && findAction(/^Withdraw$/i, nextRaceSection, false)) ||
-    findAction(/^Withdraw$/i, document, false);
+    (nextRaceSection && findActionByLabelKey("withdrawAction", nextRaceSection, false)) ||
+    findActionByLabelKey("withdrawAction", document, false);
 
   if (!withdrawAction) {
     return null;
   }
 
   const actionSection =
-    findClosest(withdrawAction, (node) => {
-      const text = normalizeText(node.innerText || "");
-      return text.includes("Event Start") || text.includes("Race Duration");
-    }) || nextRaceSection;
+      findClosest(withdrawAction, (node) => {
+        const text = normalizeText(node.innerText || "");
+        return /Event Start/i.test(text) || includesWebUiLabel(text, "raceDuration");
+      }) || nextRaceSection;
 
   return {
     status: "registered",
@@ -204,8 +208,8 @@ function getSiteRegistrationState() {
     withdrawAction,
     joinAction:
       (nextRaceSection &&
-        findAction(/^(Join Race|View in iRacing|Launch iRacing)$/i, nextRaceSection, false)) ||
-      findAction(/^(Join Race|View in iRacing|Launch iRacing)$/i, actionSection || document, false),
+        findActionByLabelKey("sessionLaunchActions", nextRaceSection, false)) ||
+      findActionByLabelKey("sessionLaunchActions", actionSection || document, false),
   };
 }
 
@@ -216,7 +220,7 @@ function getCurrentPageJoinAction() {
     return null;
   }
 
-  return findAction(/^(Join Race|View in iRacing|Launch iRacing)$/i, nextRaceSection, false);
+  return findActionByLabelKey("sessionLaunchActions", nextRaceSection, false);
 }
 
 function getRegistrationBannerState() {
@@ -422,9 +426,61 @@ function getQueueTypeTag(item) {
   return "";
 }
 
+function renderQueueItem(item) {
+  let tooltipText;
+  const sessionLabel = normalizeText(item.event_type_name || "Race").toLowerCase();
+  const queueTypeTag = getQueueTypeTag(item);
+
+  switch (item.status) {
+    case "found":
+      tooltipText =
+        `${item.event_type_name || "Race"} session found. Automatic register starts 5 minutes before the start time. Click to register now.`;
+      break;
+    case "registering":
+      tooltipText = "Registering, this can take up to 30 seconds.";
+      break;
+    case "queued":
+      tooltipText = `Searching for ${sessionLabel} session.`;
+      break;
+    default:
+      tooltipText = "";
+  }
+
+  return (
+    <div className="iref-queue-item">
+      <span
+        className={`iref-queue-status ${item.status}`}
+        title={tooltipText}
+        onClick={() => activateQueueItem(item.originalIndex, { manual: true })}
+      ></span>
+      <span className="iref-queue-text-fixed">
+        {formatCountdown(item.start_time)}
+      </span>
+      <span>
+        {" "}
+        {queueTypeTag ? `${queueTypeTag} ` : ""}
+        {item.season_name}
+      </span>
+      <button
+        className="iref-remove-btn"
+        onClick={() => {
+          removeQueuedSession(item);
+        }}
+        style={{
+          marginRight: "5px",
+          color: "var(--iref-bar-highlight)",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function syncQueueBar() {
-  const queueItemsContainer = uiRootEl.querySelector(".iref-queue-items");
-  queueItemsContainer.innerHTML = "";
+  const queueLane = uiRootEl.querySelector(".iref-queue-lane");
+
+  queueLane.innerHTML = "";
 
   if (!window.watchQueue || window.watchQueue.length < 1) {
     return;
@@ -435,57 +491,12 @@ function syncQueueBar() {
   });
 
   const sortedQueue = [...window.watchQueue].sort(
-    (a, b) => new Date(a.start_time) - new Date(b.start_time)
+    (a, b) =>
+      new Date(a.start_time) - new Date(b.start_time) || a.originalIndex - b.originalIndex
   );
 
   sortedQueue.forEach((item) => {
-    let tooltipText;
-    const sessionLabel = normalizeText(
-      item.event_type_name || "Race"
-    ).toLowerCase();
-    const queueTypeTag = getQueueTypeTag(item);
-
-    switch (item.status) {
-      case "found":
-        tooltipText =
-          `${item.event_type_name || "Race"} session found. Automatic register starts 5 minutes before the start time. Click to register now.`;
-        break;
-      case "registering":
-        tooltipText = "Registering, this can take up to 30 seconds.";
-        break;
-      case "queued":
-        tooltipText = `Searching for ${sessionLabel} session.`;
-        break;
-      default:
-        tooltipText = "";
-    }
-
-    const itemEl = (
-      <div className="iref-queue-item">
-        <span
-          className={`iref-queue-status ${item.status}`}
-          title={tooltipText}
-          onClick={() => activateQueueItem(item.originalIndex, { manual: true })}
-        ></span>
-        <span className="iref-queue-text-fixed">
-          {formatCountdown(item.start_time)}
-        </span>
-        <span> {queueTypeTag ? `${queueTypeTag} ` : ""}{item.season_name}</span>
-        <button
-          className="iref-remove-btn"
-          onClick={() => {
-            removeQueuedSession(item);
-          }}
-          style={{
-            marginRight: "5px",
-            color: "var(--iref-bar-highlight)",
-          }}
-        >
-          ×
-        </button>
-      </div>
-    );
-    queueItemsContainer.appendChild(itemEl);
+    queueLane.appendChild(renderQueueItem(item));
   });
 }
 
@@ -494,18 +505,27 @@ window.setInterval(() => {
     return;
   }
 
-  syncRegistrationBanner();
   syncQueueBar();
 }, 1000);
 
 let appended = false;
+let queueEventListenerInstalled = false;
 
 async function init(activate = true) {
   if (!activate || appended || !document.body) {
     return;
   }
 
+  hydratePersistentAutoRegisterState();
   document.body.appendChild(uiRootEl);
+
+  if (!queueEventListenerInstalled) {
+    document.addEventListener("iref:watch-queue-updated", syncQueueBar);
+    queueEventListenerInstalled = true;
+  }
+
+  syncQueueBar();
+  document.dispatchEvent(new CustomEvent("iref:status-bar-ready"));
   appended = true;
 }
 

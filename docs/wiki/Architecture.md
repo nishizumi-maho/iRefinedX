@@ -1,120 +1,105 @@
 # Architecture
 
-## Runtime Model
+This page explains how `iRefinedX` is put together and why the desktop wrapper approach is the current architecture.
 
-iRefined Browser is a content-script-driven browser extension. It does not use a background service worker in the current design. The extension works by injecting UI and helper logic directly into the logged-in iRacing website.
+## Core Design Decision
 
-## Manifest and Entry Points
+The local iRacing UI is already an Electron shell around the official web frontend. Because of that, `iRefinedX` does not try to replace the app.
 
-The extension manifest lives at `extension/public/manifest.json`.
+Instead it:
 
-The three runtime entry points are:
+- boots the official local UI
+- preserves the native preload bridge and local-service wiring
+- injects the `iRefinedX` web layer into the pages already rendered by the official app
 
-- `main.js`: injected into `members-ng` pages
-- `bridge.js`: injected into both `members-ng` and `membersite/account` pages to expose a tightly scoped storage bridge
-- `account-main.js`: injected into `OrderHistory.do` for financial parsing and summary generation
+That decision keeps the product aligned with the real iRacing UI behavior.
 
-## Main Flow
+## Main Layers
 
-`extension/src/main.js` bootstraps the extension.
+### `desktop/`
 
-It imports:
+This is the launcher/runtime-preparation layer.
 
-- the websocket helper
-- the feature modules
+Its responsibilities are:
 
-Each feature registers itself with `feature-manager.js`.
+- locate the installed iRacing UI
+- extract `app.asar`
+- patch the official `compiled/main.js`
+- patch the official `compiled/preload.js`
+- write the `iRefinedX` bootstrap module
+- spawn the official `iRacingUI.exe`
+- log runtime and network instrumentation
+- run the GitHub Releases update check and show the desktop popup
 
-## Feature Registration
+### `extension/`
 
-`extension/src/feature-manager.js` is the central switchboard.
+This is the injected enhancement layer.
 
-It:
+It is still built like a browser extension because that structure gives:
 
-- stores a registry of features
-- reads current settings from `helpers/settings.js`
-- decides whether a feature is enabled
-- starts the DOM observer-driven feature callback
-- can rerun every feature after settings changes
+- manifest-style script separation
+- a stable Vite build
+- a clean `main.js` entry point
+- a practical fallback injection bundle
 
-Three features are effectively always-on even when not user-toggleable:
+Inside the desktop runtime the same build artifacts are reused as the in-app enhancement layer.
 
-- `settings-panel`
-- `status-bar`
-- `update-notice`
+## Injection Modes
 
-`go-racing-export` is also forced on in the manager because it is treated as a core tool.
+`iRefinedX` supports two execution paths:
 
-## DOM Observation Model
+### Extension mode
 
-The project does not depend on a heavy constant full-page loop as the primary model.
+If the runtime accepts the extension assets cleanly, the official UI loads them like a Chromium extension payload.
 
-Instead, `helpers/dom-observer.js` watches page mutations and lets each feature activate when its selector appears. Some features also keep lightweight refresh intervals when they need to maintain state against a changing React UI.
+### Fallback mode
 
-## React Data Access
+If extension-mode loading is unstable, the launcher injects the built JavaScript and CSS directly into the page.
 
-iRacing uses a React application. Several features need data that is not directly exposed as plain DOM.
+The desktop runtime also injects a local `chrome.storage.local` polyfill so the same feature code can keep working in fallback mode.
 
-`helpers/react-resolver.js` provides utilities such as:
+## Native Interop
 
-- `findReact`
-- `findProps`
-- `findMemoizedProps`
-- `findStateComponent`
+The patched preload keeps and extends the official bridge. `iRefinedX` adds interop for:
 
-Those helpers walk React internals from live DOM nodes to recover props and state that the page already knows about.
+- minimize
+- maximize
+- restore
+- close
+- safe close override
 
-## Persistence Layers
+That is what lets the native iRacing titlebar buttons remain the source of truth while the desktop wrapper hides conflicting outer-window behavior.
 
-The project uses three storage styles:
+## Network And Session Visibility
 
-### 1. `localStorage`
+The bootstrap layer instruments:
 
-Used for:
+- `fetch`
+- `XMLHttpRequest`
+- websocket creation and open state
+- Electron `webRequest`
+- downloads that should trigger a Windows save dialog
 
-- extension settings
-- cached release-check data
-- queue persistence and related runtime flags
+These logs are written to `logs/*.jsonl` and are useful when validating registration, withdraw, queue and export behavior against the live local UI.
 
-### 2. `sessionStorage`
+## Queue Architecture
 
-Used where per-tab lifetime matters, especially dashboard widget state for the Budget Snapshot.
+Queue scheduling and persistence live in the injected layer, not the launcher. The launcher is only responsible for keeping the environment stable enough for the UI hooks to run.
 
-### 3. `chrome.storage.local`
+Important boundary:
 
-Used via the bridge on page contexts that need extension storage access from page-world scripts.
+- queued sessions persist if the app closes
+- queued sessions do not auto-register while the app is closed
+- reopening the app does not retroactively trigger a missed queue slot
 
-This is intentionally scoped to specific keys rather than a general-purpose arbitrary storage bridge.
+## Why The Old Browser-Only Model Was Dropped
 
-## Financial / Order History Data Path
+The browser-only model could not faithfully preserve:
 
-The financial dashboard path is split deliberately:
+- local UI windowing behavior
+- `electronTRPC`
+- viewer/DLL integration
+- local service flows
+- native register/launch behavior
 
-1. `purchase-summary.js` renders the dashboard widget
-2. `purchase-analytics.js` manages loading/sync helpers
-3. `bridge-storage.js` talks to the page bridge
-4. `bridge.js` sanitizes allowed keys and proxies storage calls
-5. `account-main.js` runs only on Order History, parses orders, computes summaries, and stores a sanitized result
-
-This split keeps the dashboard page small and isolates the heavy Order History parsing to the page that actually exposes the source data.
-
-## Websocket Path
-
-`helpers/websockets.js` is loaded once from `main.js`.
-
-It supports queue and registration-related status refresh behavior used by the session tooling. The extension still depends on what the site exposes; the websocket layer helps keep the UI in sync rather than inventing its own backend.
-
-## Dashboard Layout Model
-
-Dashboard widgets share a common row helper:
-
-- `helpers/dashboard-widget-row.js`
-- `features/dashboard-widget-row.css`
-
-This keeps the Budget Snapshot and Intelligence Center visually organized on the dashboard without each widget reinventing layout anchoring.
-
-## Release and Packaging Model
-
-The repo builds a static browser-extension output in `extension/dist/`.
-
-GitHub Actions package the built output into release zips and attach them to GitHub Releases.
+The current desktop-first design solves those problems by building on the official runtime instead of approximating it.
