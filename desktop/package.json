@@ -1,0 +1,72 @@
+{
+  "name": "irefinedx-launcher",
+  "private": true,
+  "productName": "iRefinedX",
+  "version": "1.0.0",
+  "displayVersion": "v1",
+  "description": "Desktop launcher that boots the official local iRacing UI and injects the iRefinedX enhancement layer.",
+  "author": "nishizumi-maho",
+  "repository": "https://github.com/nishizumi-maho/iRefinedX",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "node main.cjs",
+    "build:extension": "npm --prefix ..\\extension install --include=dev && npm --prefix ..\\extension run build",
+    "check": "node --check main.cjs && node --check prepare-runtime.cjs && node --check official-runtime-bootstrap-source.cjs",
+    "prepare:package": "node prepare-package.cjs",
+    "dist:win": "npm run build:extension && npm run prepare:package && electron-builder --win nsis --publish never",
+    "dist:dir": "npm run build:extension && npm run prepare:package && electron-builder --win dir --publish never"
+  },
+  "dependencies": {
+    "@electron/asar": "^3.2.19"
+  },
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.nishizumi-maho.irefinedx",
+    "productName": "iRefinedX",
+    "asar": false,
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "prepare-runtime.cjs",
+      "official-runtime-bootstrap-source.cjs",
+      "package.json",
+      "README.md",
+      "extension/dist/**/*",
+      "legal/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "iRefinedX-Setup-${version}-${arch}.${ext}",
+      "executableName": "iRefinedX"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "language": 1033,
+      "installerLanguages": [
+        "en_US"
+      ],
+      "include": "build/installer.nsh",
+      "artifactName": "iRefinedX-Setup-${version}-${arch}.${ext}",
+      "shortcutName": "iRefinedX",
+      "uninstallDisplayName": "iRefinedX"
+    }
+  }
+}

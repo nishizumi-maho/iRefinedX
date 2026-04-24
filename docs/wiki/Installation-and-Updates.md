@@ -1,30 +1,106 @@
 # Installation and Updates
 
-## Install From a Release
+This page explains the current desktop install model for `iRefinedX` and how release notifications behave.
 
-1. Download `IRX-<version>-x64.exe` from the latest GitHub release.
-2. Close any running copies of iRefinedX or older test builds.
-3. Run the installer.
-4. Choose the installation directory.
-5. Choose whether to create a desktop shortcut.
-6. Choose whether the app should start with Windows.
-7. Finish installation and launch the app.
+## Runtime Prerequisites
 
-## Upgrade an Existing Installation
+`iRefinedX` assumes:
 
-- Run the newer installer on top of the current install.
-- The installer closes the running app first so files can be replaced safely.
-- Existing settings and queue state remain in the user profile.
+- Windows
+- a working local iRacing installation
+- the official `iRacingUI.exe` present under the normal iRacing UI directory, unless overridden by environment variables
+- Node.js when running from source
 
-## In-App Update Notice
+## Local Source Flow
 
-- iRefinedX checks GitHub Releases for new versions.
-- When a new version exists, an in-app update notice appears.
-- Clicking the update action opens the official release page or installer download.
+From the repository root:
 
-## Requirements
+1. build the injected web layer  
+   `npm --prefix extension install`  
+   `npm --prefix extension run build`
+2. install the desktop launcher dependency  
+   `npm --prefix desktop install`
+3. start the launcher  
+   `npm --prefix desktop start`
 
-- Windows 10 or 11 x64
-- Updated iRacing installation
-- Updated iRacing UI content
-- Active iRacing account
+## What The Launcher Does On Start
+
+At startup the desktop layer:
+
+1. locates the installed iRacing UI
+2. extracts the official `app.asar` if needed
+3. patches the official `main.js` and `preload.js`
+4. writes the `iRefinedX` bootstrap module into the extracted runtime
+5. starts the official `iRacingUI.exe`
+6. injects the built `iRefinedX` layer into matching pages
+
+This is why the product behaves like the official local UI instead of a reimplementation.
+
+## Installed App Discovery Flow
+
+The packaged Windows app tries to locate the official iRacing UI automatically before it asks the user for anything.
+
+Discovery order:
+
+1. a previously saved `iRefinedX` UI path
+2. the Windows `iracing://` protocol association in the registry
+3. common default install locations such as `C:\Program Files (x86)\iRacing\ui` and `D:\Program Files (x86)\iRacing\ui`
+
+If those checks fail, `iRefinedX` opens a folder picker. The user can select either the iRacing root folder or the `ui` folder directly. Once a valid folder is chosen, the app caches it locally and reuses it on future launches.
+
+## Installer Options
+
+The Windows installer is the intended release artifact for normal users.
+
+It installs `iRefinedX` as its own launcher and exposes two install-time options:
+
+- `Create a desktop shortcut`
+- `Start iRefinedX when Windows starts`
+
+This keeps the official iRacing shortcut untouched while still making the modified launcher easy to access.
+
+## Update Detection
+
+`iRefinedX` checks the latest GitHub Release through the public Releases API:
+
+- desktop runtime popup: native desktop modal shown by the launcher
+- in-app notice: update toolbar button plus settings-panel note inside the injected UI
+
+Version metadata comes from:
+
+- `desktop/package.json`
+- `extension/package.json`
+- `extension/vite.config.js`
+
+## Update Behavior
+
+When a newer release exists:
+
+- a desktop popup is shown prominently
+- the popup can open the latest release page directly
+- the in-app UI also exposes the new version inside the toolbar and settings panel
+
+The updater is notification-only. It does not silently replace files or patch the app in the background.
+
+## Release Artifact Model
+
+The intended public release artifact is a Windows installer published on GitHub Releases.
+
+Portable development output can still exist for local testing, but the main user-facing distribution path is the installer.
+
+The update popup deliberately points users to the release page instead of attempting a self-update.
+
+## Upgrade Guidance
+
+When a new release is published:
+
+1. close `iRefinedX`
+2. download the newer release installer
+3. run the installer
+4. reopen `iRefinedX`
+
+## Boundaries
+
+- if GitHub has no release yet, no update is shown
+- if the app is offline, the update check fails quietly and only logs the failure
+- the updater does not depend on any private API or secret token

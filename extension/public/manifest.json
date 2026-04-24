@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "iRefinedX",
+  "version": "1.0.0",
+  "version_name": "v1",
+  "description": "Loads the iRefinedX enhancement layer inside the local iRacing UI runtime.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "iRefinedX",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "permissions": [
+    "storage"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://members-ng.iracing.com/web/*",
+        "https://members-ng.iracing.com/web/racing/*"
+      ],
+      "css": [
+        "extension.css"
+      ],
+      "js": [
+        "main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://members-ng.iracing.com/web/*",
+        "https://members-ng.iracing.com/web/racing/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

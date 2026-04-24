@@ -1,57 +1,105 @@
 # Architecture
 
-## Electron Shell
+This page explains how `iRefinedX` is put together and why the desktop wrapper approach is the current architecture.
 
-The app wraps the official iRacing web UI inside an Electron window configured to behave like the local desktop client.
+## Core Design Decision
 
-Key responsibilities:
+The local iRacing UI is already an Electron shell around the official web frontend. Because of that, `iRefinedX` does not try to replace the app.
 
-- Single-instance enforcement
-- Native-like title bar handling
-- Window state persistence
-- External link handling
-- GitHub release update checks
+Instead it:
 
-## Preload Layer
+- boots the official local UI
+- preserves the native preload bridge and local-service wiring
+- injects the `iRefinedX` web layer into the pages already rendered by the official app
 
-The preload script injects the iRefinedX enhancement bundle and bridges the renderer to native Electron IPC.
+That decision keeps the product aligned with the real iRacing UI behavior.
 
-Key responsibilities:
+## Main Layers
 
-- Chrome extension compatibility shim
-- Local helper/content-update bridge
-- Join interception
-- Queue and registration state persistence
-- In-app update notice injection
+### `desktop/`
 
-## Native Bridge
+This is the launcher/runtime-preparation layer.
 
-The native bridge integrates with local iRacing components for actions that require the installed desktop environment.
+Its responsibilities are:
 
-Key responsibilities:
+- locate the installed iRacing UI
+- extract `app.asar`
+- patch the official `compiled/main.js`
+- patch the official `compiled/preload.js`
+- write the `iRefinedX` bootstrap module
+- spawn the official `iRacingUI.exe`
+- log runtime and network instrumentation
+- run the GitHub Releases update check and show the desktop popup
 
-- Native service and viewer integration
-- Replay, AI roster, and local file helpers
-- Join and sim-launch workflows
-- Local install and version detection
+### `extension/`
 
-## iRefinedX Bundle
+This is the injected enhancement layer.
 
-The injected bundle provides the enhancement layer:
+It is still built like a browser extension because that structure gives:
 
-- Queue bar
-- Intelligence Center
-- Session export controls
-- Queue/register helpers
-- Desktop-specific styling adjustments
+- manifest-style script separation
+- a stable Vite build
+- a clean `main.js` entry point
+- a practical fallback injection bundle
 
-## Installer
+Inside the desktop runtime the same build artifacts are reused as the in-app enhancement layer.
 
-The Windows installer is built with Electron Builder and NSIS.
+## Injection Modes
 
-Key responsibilities:
+`iRefinedX` supports two execution paths:
 
-- Upgrade-in-place installs
-- Stopping a running instance before replacing files
-- Optional startup registration
-- Optional desktop shortcut creation
+### Extension mode
+
+If the runtime accepts the extension assets cleanly, the official UI loads them like a Chromium extension payload.
+
+### Fallback mode
+
+If extension-mode loading is unstable, the launcher injects the built JavaScript and CSS directly into the page.
+
+The desktop runtime also injects a local `chrome.storage.local` polyfill so the same feature code can keep working in fallback mode.
+
+## Native Interop
+
+The patched preload keeps and extends the official bridge. `iRefinedX` adds interop for:
+
+- minimize
+- maximize
+- restore
+- close
+- safe close override
+
+That is what lets the native iRacing titlebar buttons remain the source of truth while the desktop wrapper hides conflicting outer-window behavior.
+
+## Network And Session Visibility
+
+The bootstrap layer instruments:
+
+- `fetch`
+- `XMLHttpRequest`
+- websocket creation and open state
+- Electron `webRequest`
+- downloads that should trigger a Windows save dialog
+
+These logs are written to `logs/*.jsonl` and are useful when validating registration, withdraw, queue and export behavior against the live local UI.
+
+## Queue Architecture
+
+Queue scheduling and persistence live in the injected layer, not the launcher. The launcher is only responsible for keeping the environment stable enough for the UI hooks to run.
+
+Important boundary:
+
+- queued sessions persist if the app closes
+- queued sessions do not auto-register while the app is closed
+- reopening the app does not retroactively trigger a missed queue slot
+
+## Why The Old Browser-Only Model Was Dropped
+
+The browser-only model could not faithfully preserve:
+
+- local UI windowing behavior
+- `electronTRPC`
+- viewer/DLL integration
+- local service flows
+- native register/launch behavior
+
+The current desktop-first design solves those problems by building on the official runtime instead of approximating it.

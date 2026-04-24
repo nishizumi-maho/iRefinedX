@@ -1,27 +1,77 @@
 # Troubleshooting
 
-## The App Opens But iRacing Content Update Keeps Reappearing
+This page collects the most common current failure modes.
 
-- Confirm the local iRacing installation is updated from the official UI.
-- Restart iRefinedX after content finishes updating.
-- If the helper service was interrupted, relaunch the app so the local bridge reconnects cleanly.
+## The App Starts But The UI Looks Unmodified
 
-## Queue State Looks Wrong After Withdrawing
+Check:
 
-- Refresh the page or navigate away and back to the series page.
-- iRefinedX should resync the native registration state and return the queue controls to the correct state.
+- `extension/dist/` was built successfully
+- the launcher was started from the current repository copy
+- the runtime log shows `window-injected`
+- the runtime did not fall back to an older build directory
 
-## Join/Register Does Not Trigger
+Useful files:
 
-- Confirm the official local iRacing installation is still present.
-- Confirm the local helper service can be reached on `127.0.0.1`.
-- Confirm another desktop shell is not already blocking the same flow.
+- `desktop/runlogs/stdout-local-runtime.log`
+- `logs/*.jsonl`
 
-## Update Notice Does Not Open the Installer
+## Queue Bar Is Empty After Restart
 
-- The notice opens the official GitHub release page or installer asset in the browser.
-- If your default browser blocks the download, open the release page manually and download the latest installer.
+Expected current behavior:
 
-## Diagnostics
+- queued sessions should hydrate immediately on app open
+- you should not need to revisit the original series page
 
-Packaged builds write a reduced diagnostics log focused on failures and important operational events. The log lives in the application user data directory.
+If it does not:
+
+- check local storage for `iref_watch_queue`
+- confirm the app is running the current built source
+- inspect the latest `renderer-probe` log entries for queue count
+
+## Queue Did Not Register While The App Was Closed
+
+That is expected.
+
+The queue is persistent, but it is not a background daemon. `iRefinedX` only executes queue actions while the UI is actually open.
+
+## Register Or Withdraw Spins Forever
+
+This usually means one of three things:
+
+- the page state changed and the DOM did not refresh
+- the websocket or local-service push did not reach the injected layer
+- the user is testing an older build without the current websocket truth-source fixes
+
+Check the latest runtime log for:
+
+- `registration_status`
+- `reg_registered`
+- `reg_none`
+- `reg_withdraw_response`
+
+## Save Dialog Does Not Open For Session JSON
+
+Check:
+
+- the action is running inside the desktop runtime, not a plain browser
+- the runtime log does not show `will-download` interception failures
+- the page actually exposed a valid session export action
+
+## Update Popup Does Not Appear
+
+Check:
+
+- the current release tag is newer than the local version
+- the repo has at least one published GitHub Release
+- outbound access to the GitHub Releases API is not blocked
+
+If there is no published release yet, the updater has nothing to announce.
+
+## iRacing Updated And The Wrapper Broke
+
+The launcher patches extracted official files. After a real iRacing UI update, re-run the launcher and, if needed, inspect:
+
+- `desktop/prepare-runtime.cjs`
+- `desktop/official-runtime-bootstrap-source.cjs`
+- the latest log for patching failures
