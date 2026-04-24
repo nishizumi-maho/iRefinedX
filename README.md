@@ -20,6 +20,7 @@ The wiki is the primary technical reference. It documents the runtime architectu
 - boots the official local iRacing UI instead of replacing it
 - keeps native register, withdraw, launch and viewer behavior
 - adds queue tools for future sessions while preserving native register buttons for open sessions
+- keeps a separate `Queue for next race` action available in the top race queue area even after registration opens
 - keeps the lower queue/status bar visible across app restarts
 - adds the full-width `Intelligence Center` dashboard widget
 - provides session JSON sharing and export helpers where the local UI supports them

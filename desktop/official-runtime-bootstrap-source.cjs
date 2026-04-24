@@ -21,7 +21,7 @@ const IREF_MODE = process.env.IREF_MODE || "fallback";
 const IREF_NAV_TARGET = process.env.IREF_NAV_TARGET || "";
 const DESKTOP_PACKAGE = readJsonFile(DESKTOP_PACKAGE_PATH, {});
 const APP_NAME = DESKTOP_PACKAGE.productName || "iRefinedX";
-const APP_VERSION = DESKTOP_PACKAGE.version || "1.0.0";
+const APP_VERSION = DESKTOP_PACKAGE.version || "1.1.0";
 const APP_DISPLAY_VERSION =
   DESKTOP_PACKAGE.displayVersion || `v${String(APP_VERSION).split(".")[0]}`;
 const APP_RELEASE_CHANNEL =

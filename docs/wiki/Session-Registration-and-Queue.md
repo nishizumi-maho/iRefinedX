@@ -6,7 +6,7 @@ This page documents how `iRefinedX` handles native registration and future-sessi
 
 `iRefinedX` now follows a simple rule:
 
-- if the session is already open for direct registration, use the native iRacing UI buttons
+- if the session is already open for direct registration, keep using the native iRacing UI buttons
 - if the session is still closed, offer `Queue`
 
 That rule keeps the current release much closer to the official UI.
@@ -20,12 +20,14 @@ For the currently open race or qualifying slot:
 - the top card keeps the native `Register`
 - the lower table/list also keeps the native action
 - `iRefinedX` does not replace those buttons with its own custom register button
+- the `Race Queue` block can still expose `Queue for next race`, so the next race can stay queued even after the session has opened for direct registration
 
 ### Future session
 
 For future sessions whose registration has not opened yet:
 
 - `iRefinedX` can expose `Queue`
+- the top `Race Queue` block keeps a dedicated `Queue for next race` button for the current next-race slot
 - the queue stores the intended session and selected car context
 - once the target session becomes actionable, the queue flow can register it
 

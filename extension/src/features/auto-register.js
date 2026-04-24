@@ -2012,6 +2012,58 @@ function createTopQueueGroup(kind, title, subtitle) {
   return group;
 }
 
+function ensureTopPrimaryQueueButton(group, entry) {
+  if (!group) {
+    return;
+  }
+
+  const buttonsEl = group.querySelector(".iref-top-queue-buttons");
+  let button = group.querySelector('[data-iref-top-queue-primary="next-race"]');
+
+  if (!entry || !buttonsEl) {
+    button?.remove();
+    return;
+  }
+
+  const { sessionProps, slot, section } = entry;
+  const slotKey = makeQueueSlotKey(
+    sessionProps.contentId,
+    getSessionEventType(sessionProps.session),
+    slot.start_time
+  );
+
+  if (button && button.dataset.irefQueueKey !== slotKey) {
+    button.remove();
+    button = null;
+  }
+
+  if (!button) {
+    button = createQueueButton(
+      `${slugify(String(sessionProps.contentId))}-${slugify(slot.start_time)}-top-primary`,
+      "Queue for next race"
+    );
+    button.classList.add("iref-queue-btn-top", "iref-top-primary-queue");
+    button.dataset.irefTopQueuePrimary = "next-race";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const action = button._irefQueueAction;
+
+      if (!action) {
+        return;
+      }
+
+      handleQueueButtonAction(button, action.sessionProps, action.slot, action.section);
+    });
+  }
+
+  button._irefQueueAction = { sessionProps, slot, section };
+  button.dataset.irefIdleLabel = "Queue for next race";
+  button.dataset.irefQueueKey = slotKey;
+  group.insertBefore(button, buttonsEl);
+}
+
 function ensureTopQueueGroup(row, kind, title, subtitle) {
   let group = row.querySelector(`[data-iref-queue-group="${kind}"]`);
 
@@ -2082,10 +2134,17 @@ function syncTopQueueButtonList(buttonsEl, entries, labelForEntry) {
       button.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        handleQueueButtonAction(button, sessionProps, slot, section);
+        const action = button._irefQueueAction;
+
+        if (!action) {
+          return;
+        }
+
+        handleQueueButtonAction(button, action.sessionProps, action.slot, action.section);
       });
     }
 
+    button._irefQueueAction = { sessionProps, slot, section };
     button.dataset.irefIdleLabel = label;
     button.dataset.irefQueueKey = slotKey;
     buttonsEl.appendChild(button);
@@ -2155,15 +2214,24 @@ function ensureTopQueueButtons(section, sessionProps) {
     "Upcoming qualify sessions"
   );
   const currentStartTime = new Date(sessionProps.session.start_time).toISOString();
+  const canShowNextRaceQueueButton =
+    Number(sessionProps.session.max_team_drivers || 1) <= 1 && isRaceSession(sessionProps.session);
+  const nextRaceQueueEntry = canShowNextRaceQueueButton
+    ? {
+        sessionProps,
+        slot: {
+          label: getCurrentSlotLabel(section, sessionProps.session.start_time),
+          start_time: currentStartTime,
+        },
+        section,
+      }
+    : null;
   const raceSlots = getQueueSlots(section, sessionProps)
-    .filter((slot) =>
-      canDirectRegisterSession(sessionProps)
-        ? new Date(slot.start_time).toISOString() !== currentStartTime
-        : true
-    )
+    .filter((slot) => new Date(slot.start_time).toISOString() !== currentStartTime)
     .map((slot) => ({ sessionProps, slot, section }));
   const qualifyEntries = collectSessionQueueEntries(isQualifySession, [nextRace?.button]);
 
+  ensureTopPrimaryQueueButton(raceGroup, nextRaceQueueEntry);
   syncTopQueueButtonList(
     raceGroup.querySelector(".iref-top-queue-buttons"),
     raceSlots,
@@ -2175,7 +2243,7 @@ function ensureTopQueueButtons(section, sessionProps) {
     ({ slot }) => `Queue ${slot.label}`
   );
 
-  raceGroup.classList.toggle("hidden", raceSlots.length < 1);
+  raceGroup.classList.toggle("hidden", !nextRaceQueueEntry && raceSlots.length < 1);
   qualifyGroup.classList.toggle("hidden", qualifyEntries.length < 1);
 }
 
