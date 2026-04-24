@@ -1,5 +1,7 @@
 # iRefinedX
 
+![iRefinedX icon](docs/wiki/assets/icon-circle.png)
+
 `iRefinedX` is a Windows desktop launcher that reuses the installed local iRacing UI and injects the `iRefinedX` enhancement layer into the official runtime.
 
 It is not a fake clone of the iRacing UI. It boots the real local Electron app, keeps the native preload, local service, viewer integration and session handoff, then layers the `iRefinedX` features on top.
@@ -38,6 +40,23 @@ The wiki is the primary technical reference. It documents the runtime architectu
 - Node.js for source-based local builds
 - an authenticated iRacing account
 
+## Quick Install From The `.exe`
+
+1. Download the latest `iRefinedX-Setup-*.exe` from [GitHub Releases](https://github.com/nishizumi-maho/iRefinedX/releases).
+2. Close `iRefinedX` and the official `iRacing UI` before running the installer or uninstaller.
+3. Run the installer and keep `Create a desktop shortcut` enabled unless you explicitly do not want a dedicated shortcut.
+4. Leave `Start iRefinedX when Windows starts` off unless you want the launcher to auto-start with Windows.
+5. Finish the install and open `iRefinedX` from its own shortcut.
+6. If `iRefinedX` asks for the iRacing UI folder, point it to the iRacing root folder or the `ui` folder once.
+
+## Everyday Use
+
+- Open the normal `iRacing UI` shortcut when you want the untouched official UI.
+- Open the `iRefinedX` shortcut when you want the injected UI with `iRefinedX` features.
+- When iRacing updates the official UI, launch `iRefinedX` again and it will rebuild the injected layer automatically on top of the new official files.
+- To update `iRefinedX`, download the newer installer and run it over the existing install.
+- To uninstall `iRefinedX`, close `iRefinedX` and `iRacing UI` first. The uninstaller restores the official UI files before removing the app.
+
 ## Local Build And Run
 
 1. Build the enhancement layer:
@@ -59,6 +78,11 @@ On install, the user can choose:
 - create a desktop shortcut
 - start `iRefinedX` automatically with Windows
 
+The desktop shortcut option is enabled by default because the intended access model is:
+
+- official `iRacing UI` shortcut for the untouched runtime
+- `iRefinedX` shortcut for the injected runtime
+
 On first launch, `iRefinedX` tries to find the official iRacing UI automatically by checking:
 
 - the saved `iRefinedX` UI path cache
@@ -71,15 +95,23 @@ If none of those match, the app opens a folder picker so the user can point `iRe
 
 `iRefinedX` checks [GitHub Releases](https://github.com/nishizumi-maho/iRefinedX/releases) and shows a visible popup when a newer version is available.
 
-The updater only notifies. It does not silently self-update. The intended release artifact is a downloadable `iRefinedX` package or installer published on GitHub Releases.
+The updater only notifies. It does not silently self-update. The intended release artifact is a downloadable `iRefinedX` installer published on GitHub Releases.
+
+Stable builds ignore newer prereleases by default. Once a newer stable release is published, `iRefinedX` notifies the user through:
+
+- a native desktop popup
+- an in-app update button
+- an update note inside the settings panel
 
 ## Security And Privacy Summary
 
 - `npm audit --omit=dev --prefix extension`: clean
 - `npm audit --omit=dev --prefix desktop`: clean
+- GitHub CodeQL and dependency audit automation are configured in repository workflows
 - tracked source was scanned for obvious secrets and credentials
 - runtime logs, extracted app files, build output and local analysis folders are gitignored
 - queue state and settings are stored locally on the machine running the app
+- verbose network diagnostics are opt-in through `IREFINED_VERBOSE_NETWORK_LOGS=1`
 
 ## Repository Layout
 

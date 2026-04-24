@@ -9,7 +9,7 @@
 - preserves the native iRacing register, withdraw and window-control flows
 - loads the built `iRefinedX` web layer when possible
 - falls back to direct script/CSS injection if the extension does not load
-- logs HTTP/XHR/fetch/websocket activity into `logs/*.jsonl`
+- keeps verbose network diagnostics opt-in through `IREFINED_VERBOSE_NETWORK_LOGS=1`
 - checks GitHub Releases and raises a desktop update popup when a newer version is available
 
 ## Usage
@@ -31,9 +31,14 @@ The packaged `iRefinedX` app auto-discovers the official local iRacing UI by che
 
 If auto-discovery fails, it opens a folder picker and accepts either the iRacing root folder or the `ui` folder directly. The chosen path is then cached under `%APPDATA%\iRefinedX\config\iracing-ui-dir.json`.
 
-The NSIS installer is configured to show two English install options:
+The installer is configured to show two English install options:
 
 - `Create a desktop shortcut`
 - `Start iRefinedX when Windows starts`
+
+The desktop shortcut option is enabled by default so the user keeps a clear split between:
+
+- the untouched official `iRacing UI` shortcut
+- the injected `iRefinedX` shortcut
 
 If your iRacing UI is installed in a non-standard location and you want to override discovery manually, set `IRACING_UI_DIR`.

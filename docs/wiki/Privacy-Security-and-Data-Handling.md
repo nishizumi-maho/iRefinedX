@@ -20,6 +20,7 @@ Current audit results:
 
 - `npm audit --omit=dev --prefix extension`: clean
 - `npm audit --omit=dev --prefix desktop`: clean
+- GitHub CodeQL: configured through `.github/workflows/security-quality.yml`
 
 ## Repository Hygiene
 
@@ -56,7 +57,11 @@ That matters because runtime instrumentation logs can contain navigation and req
 
 ## Runtime Logging Boundary
 
-The desktop runtime can log:
+The desktop runtime always keeps low-noise launcher and lifecycle diagnostics.
+
+Verbose network diagnostics are opt-in only through `IREFINED_VERBOSE_NETWORK_LOGS=1`.
+
+When that opt-in flag is enabled, the desktop runtime can additionally log:
 
 - page navigation
 - selected request metadata
@@ -74,6 +79,7 @@ It is notification-only:
 - no silent install
 - no privilege escalation
 - no private update service
+- no background download or binary replacement
 
 ## Product Boundary
 

@@ -46,6 +46,14 @@ It currently:
 - installs desktop dependencies
 - syntax-checks the desktop runtime scripts
 
+`.github/workflows/security-quality.yml` is the security workflow.
+
+It currently:
+
+- runs runtime dependency audits for `extension/` and `desktop/`
+- runs CodeQL on the JavaScript codebase
+- feeds GitHub code scanning so the Security and Quality area stays active
+
 ## Release Workflow
 
 `.github/workflows/release.yml` now builds the Windows `iRefinedX` installer instead of the old browser-extension zip or runtime-only bundle.
@@ -53,10 +61,12 @@ It currently:
 Current release automation:
 
 - runs on Windows
+- installs Inno Setup on the runner
 - builds `extension/dist/`
 - prepares the packaged desktop app payload
-- builds the NSIS installer with `electron-builder`
-- uploads the installer and blockmap as release assets
+- builds the unpacked desktop payload with `electron-builder --win dir`
+- compiles the final Windows installer with `ISCC.exe`
+- uploads the installer as the GitHub Release asset
 
 The release page is also the target used by the in-app update popup.
 
@@ -79,3 +89,4 @@ That keeps detailed docs:
 5. build `npm --prefix desktop run dist:win`
 6. publish the GitHub Release with the installer asset
 7. verify the update popup resolves to the new release page
+8. verify CodeQL and dependency audit checks are green before treating the release as final

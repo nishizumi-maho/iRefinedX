@@ -1,5 +1,7 @@
 # iRefinedX Wiki
 
+![iRefinedX icon](assets/icon-circle.png)
+
 `iRefinedX` is a desktop-first wrapper around the official local iRacing UI.
 
 The project does not try to rebuild the iRacing app from scratch. Instead, it starts the installed `iRacingUI.exe`, patches the official Electron runtime just enough to add instrumentation and interop hooks, then injects the `iRefinedX` enhancement layer into the real `members-ng` pages the local UI already loads.
@@ -40,6 +42,7 @@ The project does not try to rebuild the iRacing app from scratch. Instead, it st
 - adding the dashboard `Intelligence Center`
 - providing session JSON sharing and export tools where the local UI supports them
 - surfacing new GitHub releases to the user through an obvious popup
+- keeping the official and injected launch paths clearly separated through dedicated shortcuts
 
 ## Current Exclusions
 

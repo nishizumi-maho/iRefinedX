@@ -24,15 +24,24 @@ const APP_NAME = DESKTOP_PACKAGE.productName || "iRefinedX";
 const APP_VERSION = DESKTOP_PACKAGE.version || "1.0.0";
 const APP_DISPLAY_VERSION =
   DESKTOP_PACKAGE.displayVersion || `v${String(APP_VERSION).split(".")[0]}`;
+const APP_RELEASE_CHANNEL =
+  String(DESKTOP_PACKAGE.releaseChannel || "").trim().toLowerCase() === "experimental"
+    ? "experimental"
+    : "stable";
 const REPO_URL = String(
   DESKTOP_PACKAGE.repository || "https://github.com/nishizumi-maho/iRefinedX"
 )
   .replace(/\.git$/i, "")
   .replace(/\/+$/, "");
-const REPO_SLUG = REPO_URL.replace(/^https:\/\/github\.com\//i, "");
-const RELEASES_URL = `${REPO_URL}/releases/latest`;
-const RELEASES_API_URL = `https://api.github.com/repos/${REPO_SLUG}/releases?per_page=10`;
+const REPO_SLUG = getRepositorySlug(REPO_URL);
+const RELEASES_URL = REPO_SLUG
+  ? `${REPO_URL}/releases/latest`
+  : "https://github.com/nishizumi-maho/iRefinedX/releases/latest";
+const RELEASES_API_URL = REPO_SLUG
+  ? `https://api.github.com/repos/${REPO_SLUG}/releases?per_page=10`
+  : "https://api.github.com/repos/nishizumi-maho/iRefinedX/releases?per_page=10";
 const UPDATE_CHECK_DELAY_MS = 7000;
+const ENABLE_VERBOSE_NETWORK_LOGS = process.env.IREFINED_VERBOSE_NETWORK_LOGS === "1";
 
 const injectedFallbackTargets = new Set();
 const autoNavigatedTargets = new Set();
@@ -84,6 +93,20 @@ function onElectronReady(handler) {
   app.on("ready", handler);
 }
 
+function getRepositorySlug(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+      return "";
+    }
+
+    return parsed.pathname.replace(/^\/+|\/+$/g, "");
+  } catch {
+    return "";
+  }
+}
+
 function normalizeVersion(value = "") {
   const numeric = String(value).match(/\d+(?:\.\d+)*/)?.[0];
 
@@ -119,16 +142,32 @@ function getLatestComparableVersion(payload = {}) {
   return payload.tag_name || payload.name || APP_DISPLAY_VERSION;
 }
 
-function selectNewestPublishedRelease(payload) {
-  const releases = (Array.isArray(payload) ? payload : [payload])
-    .filter((entry) => entry && !entry.draft)
-    .sort((left, right) => {
-      const leftTime = new Date(left.published_at || left.created_at || 0).getTime();
-      const rightTime = new Date(right.published_at || right.created_at || 0).getTime();
-      return rightTime - leftTime;
-    });
+function compareReleaseRecords(left = {}, right = {}) {
+  const versionResult = compareVersions(
+    getLatestComparableVersion(right),
+    getLatestComparableVersion(left)
+  );
 
-  return releases[0] || null;
+  if (versionResult !== 0) {
+    return versionResult;
+  }
+
+  const leftTime = new Date(left.published_at || left.created_at || 0).getTime();
+  const rightTime = new Date(right.published_at || right.created_at || 0).getTime();
+  return rightTime - leftTime;
+}
+
+function selectNewestPublishedRelease(payload) {
+  const releases = (Array.isArray(payload) ? payload : [payload]).filter(
+    (entry) => entry && !entry.draft
+  );
+  const preferred =
+    APP_RELEASE_CHANNEL === "experimental"
+      ? releases
+      : releases.filter((entry) => !entry.prerelease);
+  const candidates = preferred.length ? preferred : releases;
+
+  return candidates.sort(compareReleaseRecords)[0] || null;
 }
 
 function fetchJson(url) {
@@ -733,13 +772,15 @@ function getRuntimeProbeScript() {
       const targetUrl = String(url);
       emit("ws-open", { url: targetUrl });
 
-      socket.addEventListener("message", (event) => {
-        emit("ws-message", {
-          url: targetUrl,
-          direction: "in",
-          data: trimPayload(event.data),
+      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        socket.addEventListener("message", (event) => {
+          emit("ws-message", {
+            url: targetUrl,
+            direction: "in",
+            data: trimPayload(event.data),
+          });
         });
-      });
+      }
 
       socket.addEventListener("close", (event) => {
         emit("ws-close", {
@@ -754,16 +795,18 @@ function getRuntimeProbeScript() {
         emit("ws-error", { url: targetUrl });
       });
 
-      const nativeSend = socket.send;
-      socket.send = function(data) {
-        emit("ws-message", {
-          url: targetUrl,
-          direction: "out",
-          data: trimPayload(data),
-        });
+      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        const nativeSend = socket.send;
+        socket.send = function(data) {
+          emit("ws-message", {
+            url: targetUrl,
+            direction: "out",
+            data: trimPayload(data),
+          });
 
-        return nativeSend.call(this, data);
-      };
+          return nativeSend.call(this, data);
+        };
+      }
 
       return socket;
     };
@@ -783,20 +826,24 @@ function getRuntimeProbeScript() {
         (input && input.method) ||
         "GET";
 
-      emit("fetch", {
-        phase: "request",
-        method: requestMethod,
-        url: requestUrl,
-      });
+      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        emit("fetch", {
+          phase: "request",
+          method: requestMethod,
+          url: requestUrl,
+        });
+      }
 
       const response = await nativeFetch.apply(this, arguments);
 
-      emit("fetch", {
-        phase: "response",
-        method: requestMethod,
-        url: response.url || requestUrl,
-        status: response.status,
-      });
+      if (ENABLE_VERBOSE_NETWORK_LOGS) {
+        emit("fetch", {
+          phase: "response",
+          method: requestMethod,
+          url: response.url || requestUrl,
+          status: response.status,
+        });
+      }
 
       return response;
     };
@@ -818,28 +865,34 @@ function getRuntimeProbeScript() {
     window.XMLHttpRequest.prototype.send = function(body) {
       const meta = this.__irefinedMeta || {};
 
-      emit("xhr", {
-        phase: "request",
-        method: meta.method || "GET",
-        url: meta.url,
-        body: trimPayload(body),
-      });
-
-      this.addEventListener("load", () => {
+      if (ENABLE_VERBOSE_NETWORK_LOGS) {
         emit("xhr", {
-          phase: "response",
+          phase: "request",
           method: meta.method || "GET",
           url: meta.url,
-          status: this.status,
+          body: trimPayload(body),
         });
+      }
+
+      this.addEventListener("load", () => {
+        if (ENABLE_VERBOSE_NETWORK_LOGS) {
+          emit("xhr", {
+            phase: "response",
+            method: meta.method || "GET",
+            url: meta.url,
+            status: this.status,
+          });
+        }
       });
 
       this.addEventListener("error", () => {
-        emit("xhr", {
-          phase: "error",
-          method: meta.method || "GET",
-          url: meta.url,
-        });
+        if (ENABLE_VERBOSE_NETWORK_LOGS) {
+          emit("xhr", {
+            phase: "error",
+            method: meta.method || "GET",
+            url: meta.url,
+          });
+        }
       });
 
       return nativeSend.apply(this, arguments);
@@ -938,56 +991,58 @@ function installSessionInstrumentation(defaultSession) {
     "wss://*/*",
   ];
 
-  defaultSession.webRequest.onBeforeRequest({ urls }, (details, callback) => {
-    writeLog("network-before-request", {
-      id: details.id,
-      method: details.method,
-      resourceType: details.resourceType,
-      url: details.url,
-      webContentsId: details.webContentsId,
+  if (ENABLE_VERBOSE_NETWORK_LOGS) {
+    defaultSession.webRequest.onBeforeRequest({ urls }, (details, callback) => {
+      writeLog("network-before-request", {
+        id: details.id,
+        method: details.method,
+        resourceType: details.resourceType,
+        url: details.url,
+        webContentsId: details.webContentsId,
+      });
+
+      callback({ cancel: false });
     });
 
-    callback({ cancel: false });
-  });
+    defaultSession.webRequest.onHeadersReceived(
+      { urls },
+      (details, callback) => {
+        writeLog("network-headers", {
+          id: details.id,
+          method: details.method,
+          resourceType: details.resourceType,
+          statusCode: details.statusCode,
+          url: details.url,
+        });
 
-  defaultSession.webRequest.onHeadersReceived(
-    { urls },
-    (details, callback) => {
-      writeLog("network-headers", {
+        callback({
+          cancel: false,
+          responseHeaders: details.responseHeaders,
+        });
+      }
+    );
+
+    defaultSession.webRequest.onCompleted({ urls }, (details) => {
+      writeLog("network-completed", {
         id: details.id,
         method: details.method,
         resourceType: details.resourceType,
         statusCode: details.statusCode,
+        fromCache: details.fromCache,
         url: details.url,
       });
+    });
 
-      callback({
-        cancel: false,
-        responseHeaders: details.responseHeaders,
+    defaultSession.webRequest.onErrorOccurred({ urls }, (details) => {
+      writeLog("network-error", {
+        id: details.id,
+        method: details.method,
+        resourceType: details.resourceType,
+        error: details.error,
+        url: details.url,
       });
-    }
-  );
-
-  defaultSession.webRequest.onCompleted({ urls }, (details) => {
-    writeLog("network-completed", {
-      id: details.id,
-      method: details.method,
-      resourceType: details.resourceType,
-      statusCode: details.statusCode,
-      fromCache: details.fromCache,
-      url: details.url,
     });
-  });
-
-  defaultSession.webRequest.onErrorOccurred({ urls }, (details) => {
-    writeLog("network-error", {
-      id: details.id,
-      method: details.method,
-      resourceType: details.resourceType,
-      error: details.error,
-      url: details.url,
-    });
-  });
+  }
 
   defaultSession.on("will-download", (_event, item, webContents) => {
     const filename = item.getFilename() || "";
@@ -1254,6 +1309,8 @@ function installReadyHooks() {
       irefMode: IREF_MODE,
       appName: APP_NAME,
       appVersion: APP_VERSION,
+      appReleaseChannel: APP_RELEASE_CHANNEL,
+      verboseNetworkLogs: ENABLE_VERBOSE_NETWORK_LOGS,
       logDir: LOG_DIR,
     });
   });
