@@ -29,6 +29,7 @@ const maxClockSyncSkewMs = 2 * 60 * 60 * 1000;
 const optimisticWithdrawWindowMs = 15 * 1000;
 const nativeConfirmationArmWindowMs = 15 * 1000;
 const pendingRegistrationTimeoutMs = 45 * 1000;
+const pendingRegistrationRefreshIntervalMs = 5000;
 const raceEventType = 5;
 const qualifyEventType = 3;
 const practiceEventType = 2;
@@ -198,8 +199,8 @@ function getRegistrationState() {
     loadRegistrationState();
   }
 
-  if (isPendingRegistrationStateStale(window.irefRegistrationState)) {
-    clearRegistrationState();
+  if (recoverStaleRegistrationState(window.irefRegistrationState)) {
+    return null;
   }
 
   if (isRegistrationStateExpired(window.irefRegistrationState)) {
@@ -230,6 +231,7 @@ function setRegistrationState(nextState) {
 
 export function clearRegistrationState() {
   window.irefRegistrationState = null;
+  window.irefPendingRegistrationRefreshAt = 0;
   localStorage.removeItem(registrationStorageKey);
 }
 
@@ -257,6 +259,7 @@ function markCurrentPageWithdrawPending() {
 
 function clearCurrentPageWithdrawPending() {
   window.irefPendingWithdrawState = null;
+  window.irefPendingWithdrawRefreshAt = 0;
 }
 
 function getNativeConfirmationState() {
@@ -380,6 +383,77 @@ function finalizeConfirmedQueueRegistration(confirmedState, previousState = null
       displaced_registration: null,
     });
   }
+}
+
+function maybeRefreshPendingRegistrationProgress(state = getRegistrationState()) {
+  if (!state || state.status !== "registering") {
+    return false;
+  }
+
+  const requestedAt = new Date(
+    state.register_requested_at || state.requested_at || state.updated_at || 0
+  ).getTime();
+
+  if (Number.isNaN(requestedAt) || Date.now() - requestedAt < 1500) {
+    return false;
+  }
+
+  const lastRefreshAt = Number(window.irefPendingRegistrationRefreshAt) || 0;
+
+  if (Date.now() - lastRefreshAt < pendingRegistrationRefreshIntervalMs) {
+    return false;
+  }
+
+  const refreshed = ws.refreshNow();
+
+  if (refreshed) {
+    window.irefPendingRegistrationRefreshAt = Date.now();
+  }
+
+  return refreshed;
+}
+
+function maybeRefreshPendingWithdrawProgress() {
+  const pendingWithdrawState = getPendingWithdrawState();
+
+  if (!pendingWithdrawState) {
+    return false;
+  }
+
+  const lastRefreshAt = Number(window.irefPendingWithdrawRefreshAt) || 0;
+
+  if (Date.now() - lastRefreshAt < pendingRegistrationRefreshIntervalMs) {
+    return false;
+  }
+
+  const refreshed = ws.refreshNow();
+
+  if (refreshed) {
+    window.irefPendingWithdrawRefreshAt = Date.now();
+  }
+
+  return refreshed;
+}
+
+function recoverStaleRegistrationState(state) {
+  if (!isPendingRegistrationStateStale(state)) {
+    return false;
+  }
+
+  const matchingQueueItem = findMatchingQueueItemForState(state);
+
+  if (matchingQueueItem?.status === "registering") {
+    matchingQueueItem.status = matchingQueueItem.session_id ? "found" : "queued";
+    persistQueue();
+  }
+
+  ws.refreshNow();
+  clearNativeConfirmationState();
+  clearCurrentPageWithdrawPending();
+  clearRegistrationState();
+  syncCurrentPageRegistrationUi();
+  log("🔁 Registration state timed out; refreshed the session state and unlocked the action");
+  return true;
 }
 
 function syncRegistrationStateFromServer(pushEvent = {}) {
@@ -1945,6 +2019,45 @@ function updateQueueReadiness(queueItem, session = null) {
   );
 }
 
+function isQueueItemAttemptStale(queueItem) {
+  if (!queueItem || queueItem.status !== "registering" || !queueItem.last_attempt_at) {
+    return false;
+  }
+
+  const parsedAttemptTime = new Date(queueItem.last_attempt_at).getTime();
+
+  if (Number.isNaN(parsedAttemptTime)) {
+    return false;
+  }
+
+  return parsedAttemptTime < Date.now() - pendingRegistrationTimeoutMs;
+}
+
+function recoverStaleQueueItem(queueItem, currentRegistrationState = getRegistrationState()) {
+  if (!isQueueItemAttemptStale(queueItem)) {
+    return false;
+  }
+
+  const queueRegistrationState = buildRegistrationStateFromQueueItem(queueItem);
+
+  if (
+    currentRegistrationState &&
+    registrationTargetsMatch(currentRegistrationState, queueRegistrationState)
+  ) {
+    clearNativeConfirmationState();
+    clearCurrentPageWithdrawPending();
+    clearRegistrationState();
+  }
+
+  queueItem.status = queueItem.session_id ? "found" : "queued";
+  persistQueue();
+  ws.refreshNow();
+  log(
+    `🔁 Queue registration for ${formatSeasonName(queueItem.season_name)} ${queueItem.start_label} timed out; ready to retry`
+  );
+  return true;
+}
+
 function queueSlot(sessionProps, slot, button, section) {
   const selectedCar = getSelectedCar(sessionProps.contentId, sessionProps, section);
 
@@ -3070,12 +3183,20 @@ if (!ws.callbacks.includes(wsCallback)) {
 
 window.setInterval(() => {
   const queue = cleanupQueue();
+  const currentRegistrationState = getRegistrationState();
 
   if (queue.length !== ensureWatchQueue().length) {
     setWatchQueue(queue);
   }
 
+  maybeRefreshPendingRegistrationProgress(currentRegistrationState);
+  maybeRefreshPendingWithdrawProgress();
+
   ensureWatchQueue().forEach((queueItem, queueIndex) => {
+    if (recoverStaleQueueItem(queueItem, currentRegistrationState)) {
+      return;
+    }
+
     if (queueItem.status === "queued" && queueItem.session_id) {
       updateQueueReadiness(queueItem);
     }

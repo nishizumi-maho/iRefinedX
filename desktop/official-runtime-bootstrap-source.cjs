@@ -21,7 +21,7 @@ const IREF_MODE = process.env.IREF_MODE || "fallback";
 const IREF_NAV_TARGET = process.env.IREF_NAV_TARGET || "";
 const DESKTOP_PACKAGE = readJsonFile(DESKTOP_PACKAGE_PATH, {});
 const APP_NAME = DESKTOP_PACKAGE.productName || "iRefinedX";
-const APP_VERSION = DESKTOP_PACKAGE.version || "1.1.0";
+const APP_VERSION = DESKTOP_PACKAGE.version || "1.2.0";
 const APP_DISPLAY_VERSION =
   DESKTOP_PACKAGE.displayVersion || `v${String(APP_VERSION).split(".")[0]}`;
 const APP_RELEASE_CHANNEL =
@@ -42,10 +42,20 @@ const RELEASES_API_URL = REPO_SLUG
   : "https://api.github.com/repos/nishizumi-maho/iRefinedX/releases?per_page=10";
 const UPDATE_CHECK_DELAY_MS = 7000;
 const ENABLE_VERBOSE_NETWORK_LOGS = process.env.IREFINED_VERBOSE_NETWORK_LOGS === "1";
+const BACKGROUND_RUNTIME_SWITCHES = [
+  "disable-renderer-backgrounding",
+  "disable-background-timer-throttling",
+  "disable-backgrounding-occluded-windows",
+];
 
 const injectedFallbackTargets = new Set();
 const autoNavigatedTargets = new Set();
 let desktopUpdateCheckStarted = false;
+
+for (const runtimeSwitch of BACKGROUND_RUNTIME_SWITCHES) {
+  app.commandLine.appendSwitch(runtimeSwitch);
+}
+app.commandLine.appendSwitch("disable-features", "CalculateNativeWinOcclusion");
 
 function ensureLogDir() {
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -1219,6 +1229,20 @@ function installWindowInteropHandlers() {
 
 function instrumentWindow(window) {
   const { webContents } = window;
+
+  if (typeof webContents.setBackgroundThrottling === "function") {
+    try {
+      webContents.setBackgroundThrottling(false);
+      writeLog("window-background-throttling-disabled", {
+        window: summarizeWindow(window),
+      });
+    } catch (error) {
+      writeLog("window-background-throttling-disable-failed", {
+        window: summarizeWindow(window),
+        error: serializeError(error),
+      });
+    }
+  }
 
   window.on("ready-to-show", () => {
     ensureMainWindowFullscreen(window);
