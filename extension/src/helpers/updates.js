@@ -2,6 +2,7 @@ const CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 export const CURRENT_VERSION = __IREF_VERSION__;
 export const CURRENT_DISPLAY_VERSION = __IREF_DISPLAY_VERSION__;
+export const CURRENT_RELEASE_CHANNEL = __IREF_RELEASE_CHANNEL__;
 export const REPO_URL = __IREF_REPO_URL__;
 export const REPO_SLUG = __IREF_REPO_SLUG__;
 export const RELEASES_URL = __IREF_RELEASES_URL__;
@@ -39,6 +40,21 @@ function compareVersions(a, b) {
   }
 
   return 0;
+}
+
+function compareReleaseRecords(left = {}, right = {}) {
+  const versionResult = compareVersions(
+    right?.tag_name || right?.name || CURRENT_DISPLAY_VERSION,
+    left?.tag_name || left?.name || CURRENT_DISPLAY_VERSION
+  );
+
+  if (versionResult !== 0) {
+    return versionResult;
+  }
+
+  const leftTime = new Date(left?.published_at || left?.created_at || 0).getTime();
+  const rightTime = new Date(right?.published_at || right?.created_at || 0).getTime();
+  return rightTime - leftTime;
 }
 
 function getComparableLatestVersion(info = {}) {
@@ -114,13 +130,14 @@ function publishUpdateInfo(info) {
 }
 
 function parseReleaseInfo(payload) {
-  const release = (Array.isArray(payload) ? payload : [payload])
-    .filter((entry) => entry && !entry.draft)
-    .sort((left, right) => {
-      const leftTime = new Date(left?.published_at || left?.created_at || 0).getTime();
-      const rightTime = new Date(right?.published_at || right?.created_at || 0).getTime();
-      return rightTime - leftTime;
-    })[0];
+  const releases = (Array.isArray(payload) ? payload : [payload]).filter(
+    (entry) => entry && !entry.draft
+  );
+  const preferred =
+    CURRENT_RELEASE_CHANNEL === "experimental"
+      ? releases
+      : releases.filter((entry) => !entry.prerelease);
+  const release = (preferred.length ? preferred : releases).sort(compareReleaseRecords)[0];
   const latestTag = release?.tag_name || release?.name || CURRENT_DISPLAY_VERSION;
   const latestVersion = getComparableLatestVersion({
     latestTag,

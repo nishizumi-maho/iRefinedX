@@ -8,21 +8,26 @@ const {
   normalizeUiDirCandidate,
   isValidOfficialUiDir,
   savePreferredUiDir,
+  cleanupLocalState,
 } = require("./prepare-runtime.cjs");
 
-const APP_DATA_DIR = process.versions.electron
+const CLEANUP_FLAG = "--cleanup-installed-state";
+const IS_CLEANUP_MODE = process.argv.includes(CLEANUP_FLAG);
+const PERSISTENT_APP_DATA_DIR = process.versions.electron
   ? path.join(
       process.env.APPDATA || process.env.LOCALAPPDATA || os.tmpdir(),
       "iRefinedX"
     )
   : __dirname;
+const RUNLOG_DIR = IS_CLEANUP_MODE
+  ? path.join(os.tmpdir(), "iRefinedX-cleanup")
+  : path.join(PERSISTENT_APP_DATA_DIR, "runlogs");
 const SYSTEM32_DIR = path.join(
   process.env.SystemRoot || "C:\\Windows",
   "System32"
 );
 const TASKKILL_EXE = path.join(SYSTEM32_DIR, "taskkill.exe");
 const REG_EXE = path.join(SYSTEM32_DIR, "reg.exe");
-const RUNLOG_DIR = path.join(APP_DATA_DIR, "runlogs");
 const STDOUT_LOG = path.join(RUNLOG_DIR, "stdout-local-runtime.log");
 const STDERR_LOG = path.join(RUNLOG_DIR, "stderr-local-runtime.log");
 const IREF_MODE = process.env.IREF_MODE || "fallback";
@@ -84,6 +89,47 @@ function restoreProtocolAssociation(exePath) {
   });
 }
 
+function cleanupHasFailures(cleanupResult = {}) {
+  return (
+    (cleanupResult?.restoreResult?.failed?.length || 0) > 0 ||
+    (cleanupResult?.legacyRuntimeCleanup?.failed?.length || 0) > 0 ||
+    (cleanupResult?.failed?.length || 0) > 0
+  );
+}
+
+function exitLauncher(code = 0) {
+  const exitCode = Number.isInteger(code) ? code : 0;
+
+  if (process.versions.electron) {
+    try {
+      const { app } = require("electron");
+
+      if (app && typeof app.exit === "function") {
+        const fallbackTimer = setTimeout(() => {
+          process.exit(exitCode);
+        }, 250);
+
+        if (typeof fallbackTimer?.unref === "function") {
+          fallbackTimer.unref();
+        }
+
+        app.exit(exitCode);
+        return;
+      }
+    } catch {}
+  }
+
+  process.exit(exitCode);
+}
+
+function getProtocolHandlerExe(runtime) {
+  if (process.versions.electron && !process.defaultApp) {
+    return process.execPath;
+  }
+
+  return runtime.exePath;
+}
+
 async function promptForOfficialUiDir() {
   if (!process.versions.electron) {
     return "";
@@ -121,10 +167,30 @@ async function promptForOfficialUiDir() {
   return normalizedUiDir;
 }
 
+async function runCleanupMode() {
+  writeLauncherLog("cleanup-mode-start");
+  const cleanupResult = cleanupLocalState();
+  writeLauncherLog("cleanup-local-state-complete", cleanupResult);
+
+  if (cleanupHasFailures(cleanupResult)) {
+    const error = new Error(
+      "Cleanup failed to restore the original iRacing UI installation."
+    );
+    error.cleanupResult = cleanupResult;
+    throw error;
+  }
+}
+
 async function main() {
   ensureDir(RUNLOG_DIR);
   fs.writeFileSync(STDOUT_LOG, "", "utf8");
   fs.writeFileSync(STDERR_LOG, "", "utf8");
+
+  if (IS_CLEANUP_MODE) {
+    await runCleanupMode();
+    exitLauncher(0);
+    return;
+  }
 
   writeLauncherLog("prepare-runtime-start", {
     irefMode: IREF_MODE,
@@ -140,13 +206,15 @@ async function main() {
   try {
     runtime = await prepareRuntime();
   } catch (error) {
-    if (error?.code !== "IRACING_UI_NOT_FOUND") {
+    if (!["IRACING_UI_NOT_FOUND", "IRACING_UI_AMBIGUOUS"].includes(error?.code)) {
       throw error;
     }
 
     writeLauncherLog("iracing-ui-auto-discovery-failed", {
+      code: error.code || "",
       message: error.message,
       cacheFile: error.cacheFile || "",
+      candidates: error.candidates || [],
     });
 
     const selectedUiDir = await promptForOfficialUiDir();
@@ -159,16 +227,21 @@ async function main() {
   }
 
   writeLauncherLog("prepare-runtime-complete", runtime);
-  restoreProtocolAssociation(runtime.exePath);
+
+  const protocolHandlerExe = getProtocolHandlerExe(runtime);
+  restoreProtocolAssociation(protocolHandlerExe);
   writeLauncherLog("protocol-association-restored", {
-    exePath: runtime.exePath,
+    exePath: protocolHandlerExe,
   });
 
   const child = spawn(runtime.exePath, process.argv.slice(2), {
-    cwd: runtime.runtimeDir || LOCAL_RUNTIME_DIR,
+    cwd: runtime.officialUiDir || runtime.runtimeDir || LOCAL_RUNTIME_DIR,
     env: {
       ...process.env,
       IREF_MODE,
+      IRACING_UI_DIR: runtime.officialUiDir || process.env.IRACING_UI_DIR || "",
+      IRACING_INSTALL_ROOT:
+        runtime.officialInstallRoot || process.env.IRACING_INSTALL_ROOT || "",
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: false,
@@ -193,10 +266,7 @@ async function main() {
       signal,
     });
 
-    process.exitCode = typeof code === "number" ? code : 0;
-    setTimeout(() => {
-      process.exit(process.exitCode || 0);
-    }, 50);
+    exitLauncher(typeof code === "number" ? code : 0);
   });
 
   child.on("error", (error) => {
@@ -211,5 +281,5 @@ main().catch((error) => {
   const line = `[${new Date().toISOString()}] launcher-failed ${error.stack || error.message}\n`;
   fs.appendFileSync(STDERR_LOG, line, "utf8");
   process.stderr.write(line);
-  process.exitCode = 1;
+  exitLauncher(1);
 });

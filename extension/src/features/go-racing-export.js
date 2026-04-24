@@ -7,6 +7,9 @@ import { log } from "./logger.js";
 import "./go-racing-export.css";
 
 let persistInterval = 0;
+let menuTrackingBound = false;
+let activeStructuredSessionMenuContext = null;
+const SESSION_MENU_CONTEXT_TTL_MS = 900000;
 
 function normalizeText(text = "") {
   return text.replace(/\s+/g, " ").trim();
@@ -32,6 +35,18 @@ function slugify(text = "") {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function getStructuredSessionDomToken(props = {}) {
+  const session = props.session || {};
+  const rawToken =
+    getStructuredSessionKey(props) ||
+    session.session_name ||
+    session.track_name ||
+    session.track?.track_name ||
+    "session";
+
+  return slugify(String(rawToken)) || "session";
 }
 
 function isStructuredSessionProps(candidate = {}) {
@@ -166,6 +181,10 @@ function ensureButton(target, id, label, onClick, className = "iref-export-btn")
   let button = document.getElementById(id);
 
   if (button) {
+    button.className = className;
+    if (button.textContent !== label) {
+      button.textContent = label;
+    }
     if (button.parentElement !== target) {
       target.appendChild(button);
     }
@@ -353,7 +372,9 @@ function removeSessionExportControls() {
   });
 
   document
-    .querySelectorAll(".iref-inline-export-actions, [id^='iref-inline-export-']")
+    .querySelectorAll(
+      ".iref-inline-export-actions, [id^='iref-inline-export-'], .iref-menu-export-slot, [id^='iref-menu-export-'], .iref-detail-export-slot, [id^='iref-detail-export-']"
+    )
     .forEach((element) => {
       element.remove();
     });
@@ -380,7 +401,60 @@ function getOfficialSessionButtons() {
   );
 }
 
+function getOfficialCurrentSessionRoot() {
+  const weatherCard = findWeatherCard();
+  const nextRaceHeading = findHeading((text) => text.startsWith("Next Race @"));
+  const seeds = [weatherCard, nextRaceHeading].filter(Boolean);
+
+  for (const seed of seeds) {
+    const section = findClosest(seed, (node) => {
+      if (!node?.querySelectorAll || node === seed) {
+        return false;
+      }
+
+      const text = normalizeText(node.innerText || "");
+      const hasRaceMeta =
+        /Race Duration/i.test(text) ||
+        /Drivers/i.test(text) ||
+        /Last Race/i.test(text) ||
+        /Up Next/i.test(text);
+      const hasEntryPoint = /(Register|More ways to race|Queue|Open Now)/i.test(text);
+
+      return hasRaceMeta && hasEntryPoint;
+    });
+
+    if (section) {
+      return section;
+    }
+  }
+
+  return weatherCard?.parentElement || nextRaceHeading?.parentElement || null;
+}
+
+function extractOfficialCurrentSessionData() {
+  const weatherCard = findWeatherCard();
+  const detailRoot = getOfficialCurrentSessionRoot();
+  const props =
+    findStructuredSessionPropsInScope(detailRoot) ||
+    getStructuredSessionPropsNearElement(weatherCard) ||
+    getStructuredSessionPropsNearElement(detailRoot) ||
+    getStructuredSessionEntries(detailRoot || document)[0]?.props ||
+    null;
+
+  if (!props?.session) {
+    return null;
+  }
+
+  return buildSessionExportPayload(props, "irefined-official-session");
+}
+
 function extractOfficialSessionData() {
+  const currentSessionData = extractOfficialCurrentSessionData();
+
+  if (currentSessionData) {
+    return currentSessionData;
+  }
+
   const buttons = getOfficialSessionButtons();
   const entries = getStructuredButtonEntries(buttons);
   const props = entries[0]?.props;
@@ -686,6 +760,14 @@ function getStructuredActionContainer(element) {
     return null;
   }
 
+  if (element.matches?.("tr, [role='row']")) {
+    return (
+      element.querySelector("td:last-child, [role='cell']:last-child") ||
+      element.lastElementChild ||
+      element
+    );
+  }
+
   if (element.matches?.("button, a")) {
     return element.parentElement || element;
   }
@@ -706,17 +788,475 @@ function getStructuredActionContainer(element) {
     return visibleAction.parentElement || visibleAction;
   }
 
-  if (element.matches?.("tr, [role='row']")) {
-    return (
-      element.querySelector("td:last-child, [role='cell']:last-child") ||
-      element.lastElementChild ||
-      element
-    );
+  return element;
+}
+
+function getStructuredSessionPropsNearElement(element) {
+  if (!element) {
+    return null;
   }
 
-  return (
-    element
+  const seen = new Set();
+  let node = element;
+
+  while (node && node !== document.body) {
+    if (!seen.has(node)) {
+      seen.add(node);
+      const props = findMemoizedProps(node, isStructuredSessionProps);
+
+      if (props?.session) {
+        return props;
+      }
+    }
+
+    node = node.parentElement;
+  }
+
+  const scope =
+    element.closest?.(
+      "tr, [role='row'], article, li, [class*='card'], [class*='Card']"
+    ) ||
+    element.parentElement;
+
+  if (!scope?.querySelectorAll) {
+    return null;
+  }
+
+  for (const candidate of scope.querySelectorAll(
+    "button, a, [role='button'], [role='row'], article, li, [class*='card'], [class*='Card']"
+  )) {
+    if (seen.has(candidate)) {
+      continue;
+    }
+
+    const props = findMemoizedProps(candidate, isStructuredSessionProps);
+
+    if (props?.session) {
+      return props;
+    }
+  }
+
+  return null;
+}
+
+function findStructuredSessionPropsInScope(scope, maxCandidates = 450) {
+  if (!scope) {
+    return null;
+  }
+
+  const candidates = [];
+  const seen = new Set();
+
+  const pushCandidate = (candidate) => {
+    if (
+      !candidate ||
+      seen.has(candidate) ||
+      candidate.nodeType !== Node.ELEMENT_NODE
+    ) {
+      return;
+    }
+
+    seen.add(candidate);
+    candidates.push(candidate);
+  };
+
+  pushCandidate(scope);
+
+  const walker = document.createTreeWalker(scope, NodeFilter.SHOW_ELEMENT);
+
+  while (walker.nextNode() && candidates.length < maxCandidates) {
+    pushCandidate(walker.currentNode);
+  }
+
+  for (const candidate of candidates) {
+    const props = findMemoizedProps(candidate, isStructuredSessionProps, 40);
+
+    if (props?.session) {
+      return props;
+    }
+  }
+
+  return null;
+}
+
+function getEventTargetElement(event) {
+  const target = event?.target;
+
+  if (!target) {
+    return null;
+  }
+
+  if (target.nodeType === Node.ELEMENT_NODE) {
+    return target;
+  }
+
+  return target.parentElement || null;
+}
+
+function rememberStructuredSessionMenuContext(event) {
+  if (
+    !location.pathname.includes("/hosted") &&
+    !location.pathname.includes("/leagues")
+  ) {
+    return;
+  }
+
+  const targetElement = getEventTargetElement(event);
+  const trigger =
+    targetElement?.closest?.(
+      "button, a, [role='button'], tr, [role='row'], article, li, [class*='card'], [class*='Card']"
+    ) || targetElement;
+
+  if (!trigger || trigger.closest(".iref-menu-export-slot, .iref-detail-export-slot")) {
+    return;
+  }
+
+  const props = getStructuredSessionPropsNearElement(trigger);
+
+  if (!props?.session) {
+    return;
+  }
+
+  const triggerRect = trigger.getBoundingClientRect();
+
+  activeStructuredSessionMenuContext = {
+    props,
+    sessionKey: getStructuredSessionDomToken(props),
+    triggerRect: {
+      top: triggerRect.top,
+      right: triggerRect.right,
+      bottom: triggerRect.bottom,
+      left: triggerRect.left,
+      width: triggerRect.width,
+      height: triggerRect.height,
+    },
+    seenAt: Date.now(),
+  };
+}
+
+function ensureStructuredSessionMenuTracking() {
+  if (menuTrackingBound) {
+    return;
+  }
+
+  document.addEventListener("click", rememberStructuredSessionMenuContext, true);
+  menuTrackingBound = true;
+}
+
+function teardownStructuredSessionMenuTracking() {
+  if (!menuTrackingBound) {
+    return;
+  }
+
+  document.removeEventListener("click", rememberStructuredSessionMenuContext, true);
+  menuTrackingBound = false;
+  activeStructuredSessionMenuContext = null;
+}
+
+function getVisibleSessionMenuCandidates() {
+  const selectors = [
+    '[role="menu"]',
+    '[role="listbox"]',
+    '[data-popper-placement]',
+    '[data-placement]',
+    '[class*="menu"]',
+    '[class*="Menu"]',
+    '[class*="popover"]',
+    '[class*="Popover"]',
+    '[class*="dropdown"]',
+    '[class*="Dropdown"]',
+  ];
+  const seen = new Set();
+  const candidates = [];
+
+  for (const candidate of document.querySelectorAll(selectors.join(", "))) {
+    if (seen.has(candidate) || !isVisible(candidate)) {
+      continue;
+    }
+
+    seen.add(candidate);
+
+    if (
+      candidate.closest("#iref-settings-overlay") ||
+      candidate.closest(".iref-export-actions") ||
+      candidate.closest(".iref-inline-export-actions")
+    ) {
+      continue;
+    }
+
+    const rect = candidate.getBoundingClientRect();
+
+    if (
+      rect.width < 120 ||
+      rect.height < 40 ||
+      rect.width > Math.min(window.innerWidth * 0.92, 560) ||
+      rect.height > window.innerHeight * 0.9
+    ) {
+      continue;
+    }
+
+    const style = window.getComputedStyle(candidate);
+    const isLayered =
+      ["absolute", "fixed", "sticky"].includes(style.position) ||
+      Number.parseInt(style.zIndex || "0", 10) > 9 ||
+      candidate.hasAttribute("data-popper-placement") ||
+      candidate.hasAttribute("data-placement");
+
+    if (!isLayered) {
+      continue;
+    }
+
+    candidates.push(candidate);
+  }
+
+  return candidates;
+}
+
+function scoreSessionMenuCandidate(candidate, context) {
+  if (!candidate || !context?.triggerRect) {
+    return Number.NEGATIVE_INFINITY;
+  }
+
+  const rect = candidate.getBoundingClientRect();
+  const className =
+    typeof candidate.className === "string"
+      ? candidate.className
+      : candidate.className?.baseVal || "";
+  const text = normalizeText(candidate.innerText || "");
+  const buttonCount = candidate.querySelectorAll(
+    "button, a, [role='menuitem']"
+  ).length;
+  const hasMenuSemantics =
+    candidate.getAttribute("role") === "menu" ||
+    !!candidate.querySelector("[role='menuitem']");
+  const triggerRect = context.triggerRect;
+  const dx = Math.max(triggerRect.left - rect.right, rect.left - triggerRect.right, 0);
+  const dy = Math.max(triggerRect.top - rect.bottom, rect.top - triggerRect.bottom, 0);
+  const distance = Math.hypot(dx, dy);
+  const overlapsTriggerBand =
+    rect.right >= triggerRect.left - 24 && rect.left <= triggerRect.right + 24;
+
+  let score = 0;
+
+  if (hasMenuSemantics) {
+    score += 18;
+  }
+
+  if (/menu|popover|dropdown/i.test(className)) {
+    score += 12;
+  }
+
+  if (/register|add to cart|locked|withdraw|join|watch|view/i.test(text)) {
+    score += 8;
+  }
+
+  score += Math.min(buttonCount, 6);
+  score += Math.max(0, 28 - distance / 12);
+
+  if (overlapsTriggerBand) {
+    score += 8;
+  }
+
+  if (candidate.querySelector(".iref-menu-export-slot")) {
+    score += 24;
+  }
+
+  return score;
+}
+
+function getStructuredSessionMenuContainer() {
+  if (
+    !activeStructuredSessionMenuContext ||
+    Date.now() - activeStructuredSessionMenuContext.seenAt > SESSION_MENU_CONTEXT_TTL_MS
+  ) {
+    activeStructuredSessionMenuContext = null;
+    return null;
+  }
+
+  const candidates = getVisibleSessionMenuCandidates();
+  let bestCandidate = null;
+  let bestScore = 0;
+
+  for (const candidate of candidates) {
+    const score = scoreSessionMenuCandidate(
+      candidate,
+      activeStructuredSessionMenuContext
+    );
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestCandidate = candidate;
+    }
+  }
+
+  return bestScore >= 18 ? bestCandidate : null;
+}
+
+function ensureMenuExportSlot(target, slotId) {
+  if (!target) {
+    return null;
+  }
+
+  let slot = document.getElementById(slotId);
+
+  if (slot) {
+    if (slot.parentElement !== target) {
+      target.appendChild(slot);
+    }
+    return slot;
+  }
+
+  slot = document.createElement(target.matches("ul, ol, menu") ? "li" : "div");
+  slot.id = slotId;
+  slot.className = "iref-menu-export-slot";
+
+  if (target.getAttribute("role") === "menu") {
+    slot.setAttribute("role", "none");
+  }
+
+  target.appendChild(slot);
+  return slot;
+}
+
+function getActiveStructuredSessionContext() {
+  if (
+    !activeStructuredSessionMenuContext ||
+    Date.now() - activeStructuredSessionMenuContext.seenAt > SESSION_MENU_CONTEXT_TTL_MS
+  ) {
+    activeStructuredSessionMenuContext = null;
+    return null;
+  }
+
+  return activeStructuredSessionMenuContext;
+}
+
+function getHostedLeagueDetailWeatherLabel(root = document) {
+  return [...root.querySelectorAll("h1, h2, h3, h4, h5, h6, p, span, div, strong")].find(
+    (element) => {
+      if (!isVisible(element)) {
+        return false;
+      }
+
+      const text = normalizeText(element.textContent);
+      return text === "Static Weather" || text === "Realistic Weather";
+    }
   );
+}
+
+function getHostedLeagueDetailWeatherCard() {
+  const label = getHostedLeagueDetailWeatherLabel();
+
+  if (!label) {
+    return null;
+  }
+
+  const card = findClosest(label, (node) => {
+    if (!node?.querySelectorAll || node === label) {
+      return false;
+    }
+
+    const text = normalizeText(node.innerText || "");
+
+    if (!/(Static Weather|Realistic Weather)/i.test(text)) {
+      return false;
+    }
+
+    const hasWeatherMeta =
+      /Humidity/i.test(text) ||
+      /Wind/i.test(text) ||
+      /Track Moisture/i.test(text) ||
+      /Cloud Cover/i.test(text);
+    const hasTemperature = /°\s*[FC]/i.test(text);
+
+    return hasWeatherMeta && hasTemperature;
+  });
+
+  if (!card) {
+    return null;
+  }
+
+  return {
+    card,
+    label,
+  };
+}
+
+function getHostedLeagueDetailRoot(seed) {
+  if (!seed) {
+    return null;
+  }
+
+  return findClosest(seed, (node) => {
+    if (!node?.querySelectorAll || node === seed) {
+      return false;
+    }
+
+    const text = normalizeText(node.innerText || "");
+
+    return (
+      /(Static Weather|Realistic Weather)/i.test(text) &&
+      /Session Details/i.test(text) &&
+      /Entries/i.test(text)
+    );
+  });
+}
+
+function getStructuredSessionDetailContext(detailRoot) {
+  const activeContext = getActiveStructuredSessionContext();
+
+  if (activeContext?.props?.session) {
+    return activeContext;
+  }
+
+  const detailScope = getHostedLeagueDetailRoot(detailRoot) || detailRoot;
+  const derivedProps =
+    findStructuredSessionPropsInScope(detailScope) ||
+    getStructuredSessionPropsNearElement(detailScope) ||
+    getStructuredSessionEntries(detailScope)[0]?.props ||
+    null;
+
+  if (!derivedProps?.session) {
+    return null;
+  }
+
+  return {
+    props: derivedProps,
+    sessionKey: getStructuredSessionDomToken(derivedProps),
+    seenAt: Date.now(),
+  };
+}
+
+function ensureDetailExportSlot(
+  anchor,
+  slotId,
+  className = "iref-detail-export-slot"
+) {
+  if (!anchor?.parentElement) {
+    return null;
+  }
+
+  let slot = document.getElementById(slotId);
+
+  if (!slot) {
+    slot = document.createElement("div");
+    slot.id = slotId;
+  }
+
+  slot.className = className;
+
+  document.querySelectorAll(".iref-detail-export-slot").forEach((candidate) => {
+    if (candidate !== slot) {
+      candidate.remove();
+    }
+  });
+
+  const target = anchor.parentElement;
+
+  if (slot.parentElement !== target || anchor.nextElementSibling !== slot) {
+    target.insertBefore(slot, anchor.nextSibling);
+  }
+
+  return slot;
 }
 
 function getStructuredSessionEntries(root = document) {
@@ -817,39 +1357,44 @@ function getEntriesCollectionTarget(entries = []) {
   });
 }
 
-function injectStructuredExportButtons(entries) {
-  entries.forEach(({ element, props }) => {
-    const session = props.session || {};
-    const sessionKey =
-      getStructuredSessionKey(props) || slugify(session.session_name);
-    const actionTarget = getStructuredActionContainer(element);
-    const container = ensureActionRow(
-      actionTarget,
-      "iref-inline-export-actions",
-      `iref-inline-export-${sessionKey}`
-    );
-    const trackName = session.track_name || session.track?.track_name || "session";
+function injectStructuredDetailExportButton() {
+  const weatherCard = getHostedLeagueDetailWeatherCard();
 
-    ensureButton(
-      container,
-      `iref-inline-session-${sessionKey}`,
-      "Session JSON",
-      async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
+  if (!weatherCard) {
+    return;
+  }
 
-        const data = buildSessionExportPayload(props, "irefined-session");
-        const filename = `${slugify(session.session_name || trackName)}-session.json`;
+  const context = getStructuredSessionDetailContext(weatherCard.card);
 
-        const result = await downloadJson(filename, data);
+  if (!context?.props?.session) {
+    return;
+  }
 
-        if (result?.saved) {
-          log(`Downloaded ${filename}`);
-        }
-      },
-      "iref-export-btn iref-export-btn-inline"
-    );
-  });
+  const session = context.props.session || {};
+  const trackName = session.track_name || session.track?.track_name || "session";
+  const slot = ensureDetailExportSlot(
+    weatherCard.card,
+    `iref-detail-export-${context.sessionKey}`
+  );
+
+  ensureButton(
+    slot,
+    `iref-detail-session-${context.sessionKey}`,
+    "Export Session JSON",
+    async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const data = buildSessionExportPayload(context.props, "irefined-session");
+      const filename = `${slugify(session.session_name || trackName)}-session.json`;
+      const result = await downloadJson(filename, data);
+
+      if (result?.saved) {
+        log(`Downloaded ${filename}`);
+      }
+    },
+    "iref-export-btn iref-detail-export-btn"
+  );
 }
 
 function extractStructuredSessionsData(entries, exportType, title) {
@@ -906,37 +1451,52 @@ function injectWeatherButton() {
 function injectOfficialSessionsButton() {
   const section = getSessionsSection();
   const header = section?.querySelector("h2, h3, h4")?.parentElement;
+  const weatherCard = findWeatherCard();
 
-  if (!header) {
+  if (!header && !weatherCard) {
     return;
   }
 
-  const actionRow = ensureActionRow(
-    header,
-    "iref-export-actions",
-    "iref-official-sessions-export-actions"
+  const actionRow = weatherCard
+    ? ensureDetailExportSlot(
+        weatherCard,
+        "iref-official-sessions-export-actions",
+        "iref-detail-export-slot iref-official-detail-export-slot"
+      )
+    : ensureActionRow(
+        header,
+        "iref-export-actions",
+        "iref-official-sessions-export-actions"
+      );
+
+  ensureButton(
+    actionRow,
+    "iref-export-sessions",
+    "Export Session JSON",
+    async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const data = extractOfficialSessionData();
+
+      if (!data) {
+        log("Session export unavailable on this page");
+        return;
+      }
+
+      const filename = `${slugify(
+        data.summary?.sessionName || data.summary?.trackName || getSeriesTitle()
+      )}-session.json`;
+      const result = await downloadJson(filename, data);
+
+      if (result?.saved) {
+        log(`Downloaded ${filename}`);
+      }
+    },
+    weatherCard
+      ? "iref-export-btn iref-detail-export-btn iref-official-detail-export-btn"
+      : "iref-export-btn"
   );
-
-  ensureButton(actionRow, "iref-export-sessions", "Export Session JSON", async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const data = extractOfficialSessionData();
-
-    if (!data) {
-      log("Session export unavailable on this page");
-      return;
-    }
-
-    const filename = `${slugify(
-      data.summary?.sessionName || data.summary?.trackName || getSeriesTitle()
-    )}-session.json`;
-    const result = await downloadJson(filename, data);
-
-    if (result?.saved) {
-      log(`Downloaded ${filename}`);
-    }
-  });
 }
 
 function injectHostedSessionsButton() {
@@ -1036,9 +1596,12 @@ async function init(activate = true) {
   clearInterval(persistInterval);
 
   if (!activate) {
+    teardownStructuredSessionMenuTracking();
     removeSessionExportControls();
     return;
   }
+
+  ensureStructuredSessionMenuTracking();
 
   persistInterval = setInterval(() => {
     removeWeatherControls();
@@ -1055,12 +1618,11 @@ async function init(activate = true) {
       injectOfficialSessionsButton();
     }
 
-    if (location.pathname.includes("/hosted")) {
-      injectStructuredExportButtons(getHostedSessionEntries());
-    }
-
-    if (location.pathname.includes("/leagues")) {
-      injectStructuredExportButtons(getLeagueSessionEntries());
+    if (
+      location.pathname.includes("/hosted") ||
+      location.pathname.includes("/leagues")
+    ) {
+      injectStructuredDetailExportButton();
     }
   }, 500);
 }

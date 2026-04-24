@@ -7,7 +7,7 @@ This is the current active feature map for `iRefinedX`.
 - boots the official installed `iRacingUI.exe`
 - keeps official preload, local-service and viewer plumbing
 - exposes working native window controls through the local UI
-- logs runtime/network behavior for troubleshooting
+- keeps low-noise runtime diagnostics on by default and verbose network diagnostics opt-in
 
 ## Registration And Queue
 

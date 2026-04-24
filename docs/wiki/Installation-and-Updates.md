@@ -57,7 +57,23 @@ It installs `iRefinedX` as its own launcher and exposes two install-time options
 - `Create a desktop shortcut`
 - `Start iRefinedX when Windows starts`
 
-This keeps the official iRacing shortcut untouched while still making the modified launcher easy to access.
+`Create a desktop shortcut` is enabled by default. This keeps the official iRacing shortcut untouched while still making the modified launcher easy to access.
+
+## Recommended End-User Install Flow
+
+For a normal user, the intended flow is:
+
+1. download `iRefinedX-Setup-*.exe` from GitHub Releases
+2. close `iRefinedX` and `iRacing UI` if either is open
+3. run the installer
+4. keep the desktop shortcut enabled unless a dedicated shortcut is not wanted
+5. finish the install and open `iRefinedX`
+6. if prompted, point `iRefinedX` at the installed iRacing root or `ui` folder once
+
+After installation:
+
+- open `iRacing UI` for the untouched official runtime
+- open `iRefinedX` for the injected runtime
 
 ## Update Detection
 
@@ -71,6 +87,8 @@ Version metadata comes from:
 - `desktop/package.json`
 - `extension/package.json`
 - `extension/vite.config.js`
+
+Stable builds prefer stable GitHub Releases and ignore newer prereleases by default. Experimental builds can follow the prerelease channel.
 
 ## Update Behavior
 
@@ -98,6 +116,18 @@ When a new release is published:
 2. download the newer release installer
 3. run the installer
 4. reopen `iRefinedX`
+
+## Uninstall Behavior
+
+During uninstall, `iRefinedX` first tries to restore the original official UI files that were kept beside the injected runtime.
+
+The uninstaller intentionally stops with an error if:
+
+- `iRefinedX` is still open
+- the official `iRacingUI.exe` is still open
+- the runtime cleanup fails
+
+That rule exists to avoid leaving the local UI in a half-restored state.
 
 ## Boundaries
 

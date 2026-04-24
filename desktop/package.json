@@ -4,6 +4,7 @@
   "productName": "iRefinedX",
   "version": "1.0.0",
   "displayVersion": "v1",
+  "releaseChannel": "stable",
   "description": "Desktop launcher that boots the official local iRacing UI and injects the iRefinedX enhancement layer.",
   "author": "nishizumi-maho",
   "repository": "https://github.com/nishizumi-maho/iRefinedX",
@@ -13,7 +14,8 @@
     "build:extension": "npm --prefix ..\\extension install --include=dev && npm --prefix ..\\extension run build",
     "check": "node --check main.cjs && node --check prepare-runtime.cjs && node --check official-runtime-bootstrap-source.cjs",
     "prepare:package": "node prepare-package.cjs",
-    "dist:win": "npm run build:extension && npm run prepare:package && electron-builder --win nsis --publish never",
+    "build:inno": "node build-inno.cjs",
+    "dist:win": "npm run dist:dir && npm run build:inno",
     "dist:dir": "npm run build:extension && npm run prepare:package && electron-builder --win dir --publish never"
   },
   "dependencies": {
@@ -27,6 +29,11 @@
     "appId": "com.nishizumi-maho.irefinedx",
     "productName": "iRefinedX",
     "asar": false,
+    "compression": "normal",
+    "electronLanguages": [
+      "en-US",
+      "pt-BR"
+    ],
     "directories": {
       "buildResources": "build",
       "output": "dist"
@@ -44,29 +51,13 @@
       "icon": "build/icon.ico",
       "target": [
         {
-          "target": "nsis",
+          "target": "dir",
           "arch": [
             "x64"
           ]
         }
       ],
-      "artifactName": "iRefinedX-Setup-${version}-${arch}.${ext}",
       "executableName": "iRefinedX"
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": true,
-      "runAfterFinish": true,
-      "language": 1033,
-      "installerLanguages": [
-        "en_US"
-      ],
-      "include": "build/installer.nsh",
-      "artifactName": "iRefinedX-Setup-${version}-${arch}.${ext}",
-      "shortcutName": "iRefinedX",
-      "uninstallDisplayName": "iRefinedX"
     }
   }
 }

@@ -31,10 +31,13 @@ export function getSettings() {
   try {
     const raw = JSON.parse(localStorage.getItem("iref_settings"));
     const nextSettings = stripRemovedSettings(raw);
-    return {
+    const mergedSettings = {
       ...DEFAULT_SETTINGS,
       ...nextSettings,
     };
+    mergedSettings["hide-go-racing-json-export-buttons"] =
+      mergedSettings["hide-go-racing-json-export-buttons"] === true;
+    return mergedSettings;
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
@@ -46,6 +49,8 @@ export function saveSettings(settings = {}) {
     ...DEFAULT_SETTINGS,
     ...sanitizedSettings,
   };
+  nextSettings["hide-go-racing-json-export-buttons"] =
+    nextSettings["hide-go-racing-json-export-buttons"] === true;
 
   localStorage.setItem("iref_settings", JSON.stringify(nextSettings));
   return nextSettings;

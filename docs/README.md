@@ -14,3 +14,5 @@ This directory keeps repository-side documentation that complements the GitHub w
 - Third-party notices: `../THIRD_PARTY_NOTICES.md`
 
 The repository README stays concise. Detailed feature, architecture, storage, privacy, troubleshooting and release documentation lives in the wiki.
+
+The wiki source also carries shared assets, such as the current repository icon under `docs/wiki/assets/`.
