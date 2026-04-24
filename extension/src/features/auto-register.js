@@ -1,0 +1,3073 @@
+import { log } from "./logger.js";
+import features from "../feature-manager.js";
+import { findMemoizedProps } from "../helpers/react-resolver.js";
+import { getSettings } from "../helpers/settings.js";
+import { initSoundSupport, playQueueRegisteredSound } from "../helpers/sound.js";
+import {
+  getFirstSessionActionEntry,
+  getWebUiLabels,
+  getSessionActionEntries,
+  includesWebUiLabel,
+  isVisible,
+  startsWithWebUiLabel,
+} from "../helpers/webui-locale.js";
+import ws from "../helpers/websockets.js";
+import "./auto-register.css";
+
+const selector = 'a.active[href*="go-racing"]';
+const id = "auto-register";
+const bodyClass = "iref-" + id;
+const persistStorageKey = "iref_watch_queue";
+const registrationStorageKey = "iref_registration_state";
+const queueUpdatedEventName = "iref:watch-queue-updated";
+const autoRegisterLeadMs = 5 * 60 * 1000;
+const autoRegisterGraceMs = 15 * 60 * 1000;
+const queueRetentionMs = 12 * 60 * 60 * 1000;
+const queueWithdrawRetryDelayMs = 2500;
+const queueRegisterDelayMs = 7000;
+const maxClockSyncSkewMs = 2 * 60 * 60 * 1000;
+const optimisticWithdrawWindowMs = 15 * 1000;
+const nativeConfirmationArmWindowMs = 15 * 1000;
+const pendingRegistrationTimeoutMs = 45 * 1000;
+const raceEventType = 5;
+const qualifyEventType = 3;
+const practiceEventType = 2;
+const EVENT_TYPE_NAME_ALIASES = {
+  [raceEventType]: [
+    "race",
+    "races",
+    "corrida",
+    "corridas",
+    "carrera",
+    "carreras",
+    "rennen",
+    "gara",
+    "gare",
+    "course",
+    "courses",
+  ],
+  [qualifyEventType]: [
+    "qual",
+    "quali",
+    "qualify",
+    "qualifying",
+    "qualification",
+    "qualificacao",
+    "clasificacion",
+    "qualifikation",
+    "qualifica",
+    "qualific",
+  ],
+  [practiceEventType]: [
+    "practice",
+    "pratica",
+    "practica",
+    "treino",
+    "training",
+    "entrain",
+    "allenamento",
+  ],
+};
+let persistInterval = 0;
+
+function shouldRequeueDisplacedRegistration() {
+  return getSettings()["queue-requeue-displaced-registration"] === true;
+}
+
+function normalizeText(text = "") {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function normalizeSearchText(text = "") {
+  return normalizeText(text).toLowerCase();
+}
+
+function normalizeAliasText(text = "") {
+  const normalized = normalizeSearchText(text);
+
+  if (typeof normalized.normalize !== "function") {
+    return normalized;
+  }
+
+  return normalized.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function toNumber(value) {
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function getTextLines(text = "") {
+  return text
+    .split("\n")
+    .map((line) => normalizeText(line))
+    .filter(Boolean);
+}
+
+function slugify(text = "") {
+  return normalizeText(text)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function formatSeasonName(seasonName = "") {
+  return seasonName
+    .replace(/(?:\s*-\s*)?\d{4}\sSeason(?:\s\d+)?/, "")
+    .replace(/Fixed\s(?:-\s)?Fixed/, "Fixed")
+    .replace("Series Series", "Series");
+}
+
+function ensureWatchQueue() {
+  if (!Array.isArray(window.watchQueue)) {
+    window.watchQueue = [];
+  }
+
+  return window.watchQueue;
+}
+
+function dispatchWatchQueueUpdated() {
+  document.dispatchEvent(
+    new CustomEvent(queueUpdatedEventName, {
+      detail: {
+        count: ensureWatchQueue().length,
+      },
+    })
+  );
+}
+
+function isPendingRegistrationStateStale(state) {
+  if (!state || state.status !== "registering" || state.confirmed_by_site === true) {
+    return false;
+  }
+
+  const referenceTime = state.register_requested_at || state.requested_at || state.updated_at;
+
+  if (!referenceTime) {
+    return false;
+  }
+
+  const parsed = new Date(referenceTime).getTime();
+
+  if (Number.isNaN(parsed)) {
+    return false;
+  }
+
+  return parsed < Date.now() - pendingRegistrationTimeoutMs;
+}
+
+function isRegistrationStateExpired(state) {
+  if (!state || typeof state !== "object") {
+    return true;
+  }
+
+  const referenceTime = state.start_time || state.updated_at || state.registered_at;
+
+  if (!referenceTime) {
+    return false;
+  }
+
+  const parsed = new Date(referenceTime).getTime();
+
+  if (Number.isNaN(parsed)) {
+    return false;
+  }
+
+  return parsed < getCurrentTime() - queueRetentionMs;
+}
+
+function loadRegistrationState() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(registrationStorageKey));
+
+    if (!stored || isRegistrationStateExpired(stored)) {
+      window.irefRegistrationState = null;
+      localStorage.removeItem(registrationStorageKey);
+      return;
+    }
+
+    window.irefRegistrationState = stored;
+  } catch {
+    window.irefRegistrationState = null;
+    localStorage.removeItem(registrationStorageKey);
+  }
+}
+
+function getRegistrationState() {
+  if (window.irefRegistrationState === undefined) {
+    loadRegistrationState();
+  }
+
+  if (isPendingRegistrationStateStale(window.irefRegistrationState)) {
+    clearRegistrationState();
+  }
+
+  if (isRegistrationStateExpired(window.irefRegistrationState)) {
+    clearRegistrationState();
+  }
+
+  return window.irefRegistrationState || null;
+}
+
+function setRegistrationState(nextState) {
+  if (!nextState || typeof nextState !== "object") {
+    clearRegistrationState();
+    return null;
+  }
+
+  window.irefRegistrationState = {
+    ...nextState,
+    updated_at: new Date().toISOString(),
+  };
+
+  localStorage.setItem(
+    registrationStorageKey,
+    JSON.stringify(window.irefRegistrationState)
+  );
+
+  return window.irefRegistrationState;
+}
+
+export function clearRegistrationState() {
+  window.irefRegistrationState = null;
+  localStorage.removeItem(registrationStorageKey);
+}
+
+function getPendingWithdrawState() {
+  const pendingWithdrawState = window.irefPendingWithdrawState;
+
+  if (
+    !pendingWithdrawState ||
+    !pendingWithdrawState.expires_at ||
+    pendingWithdrawState.expires_at <= Date.now()
+  ) {
+    window.irefPendingWithdrawState = null;
+    return null;
+  }
+
+  return pendingWithdrawState;
+}
+
+function markCurrentPageWithdrawPending() {
+  window.irefPendingWithdrawState = {
+    path: location.pathname,
+    expires_at: Date.now() + optimisticWithdrawWindowMs,
+  };
+}
+
+function clearCurrentPageWithdrawPending() {
+  window.irefPendingWithdrawState = null;
+}
+
+function getNativeConfirmationState() {
+  const state = window.irefNativeConfirmationState;
+
+  if (!state || !state.expires_at || state.expires_at <= Date.now()) {
+    window.irefNativeConfirmationState = null;
+    return null;
+  }
+
+  return state;
+}
+
+function clearNativeConfirmationState() {
+  window.irefNativeConfirmationState = null;
+}
+
+function armNativeConfirmation(kind = "generic", extra = {}) {
+  window.irefNativeConfirmationState = {
+    kind,
+    armed_at: new Date().toISOString(),
+    expires_at: Date.now() + nativeConfirmationArmWindowMs,
+    ...extra,
+  };
+
+  return window.irefNativeConfirmationState;
+}
+
+export function isCurrentPageWithdrawPending() {
+  const pendingWithdrawState = getPendingWithdrawState();
+
+  if (!pendingWithdrawState) {
+    return false;
+  }
+
+  return pendingWithdrawState.path === location.pathname;
+}
+
+export function getCurrentRegistrationState() {
+  return getRegistrationState();
+}
+
+export function confirmRegistrationState(extra = {}) {
+  clearCurrentPageWithdrawPending();
+  const currentState = getRegistrationState();
+
+  if (!currentState) {
+    return setRegistrationState({
+      status: "registered",
+      confirmed_by_site: true,
+      source: "site",
+      ...extra,
+      registered_at: new Date().toISOString(),
+    });
+  }
+
+  return setRegistrationState({
+    ...currentState,
+    ...extra,
+    status: "registered",
+    confirmed_by_site: true,
+    source: currentState.source || "site",
+    registered_at: currentState.registered_at || new Date().toISOString(),
+  });
+}
+
+function isRegisteredServerStatus(regStatus = "") {
+  const normalized = normalizeSearchText(regStatus);
+
+  return (
+    normalized === "reg_registered" ||
+    normalized === "registered" ||
+    normalized.endsWith("_registered")
+  );
+}
+
+function isClearedServerStatus(regStatus = "") {
+  const normalized = normalizeSearchText(regStatus);
+
+  return normalized === "reg_none" || normalized === "none" || normalized.endsWith("_none");
+}
+
+function findMatchingQueueItemForState(registrationState) {
+  if (!registrationState) {
+    return null;
+  }
+
+  return (
+    ensureWatchQueue().find((queueItem) =>
+      registrationTargetsMatch(
+        buildRegistrationStateFromQueueItem(queueItem),
+        registrationState
+      )
+    ) || null
+  );
+}
+
+function finalizeConfirmedQueueRegistration(confirmedState, previousState = null) {
+  if (
+    previousState?.confirmed_by_site === true &&
+    registrationTargetsMatch(previousState, confirmedState)
+  ) {
+    return;
+  }
+
+  const matchingQueueItem = findMatchingQueueItemForState(confirmedState);
+
+  if (matchingQueueItem) {
+    playQueueRegisteredSound();
+    removeQueueItem(matchingQueueItem);
+  }
+
+  if (confirmedState?.source === "queue" && confirmedState?.displaced_registration) {
+    requeueDisplacedRegistration(
+      confirmedState.displaced_registration,
+      confirmedState
+    );
+
+    setRegistrationState({
+      ...confirmedState,
+      displaced_registration: null,
+    });
+  }
+}
+
+function syncRegistrationStateFromServer(pushEvent = {}) {
+  if (!pushEvent || typeof pushEvent !== "object") {
+    return false;
+  }
+
+  if (pushEvent.type === "reg_withdraw_response") {
+    if (pushEvent.data?.success === true) {
+      clearNativeConfirmationState();
+    }
+
+    return pushEvent.data?.success === true;
+  }
+
+  if (pushEvent.type !== "registration_status") {
+    return false;
+  }
+
+  const previousState = getRegistrationState();
+  const regStatus = pushEvent.data?.reg_status || "";
+
+  if (isClearedServerStatus(regStatus)) {
+    clearNativeConfirmationState();
+    clearCurrentPageWithdrawPending();
+    clearRegistrationState();
+    setCurrentPageRegistrationMode("register");
+    syncCurrentPageRegistrationUi();
+    return true;
+  }
+
+  if (!isRegisteredServerStatus(regStatus)) {
+    return false;
+  }
+
+  clearNativeConfirmationState();
+  const confirmedState = confirmRegistrationState({
+    season_id: pushEvent.data?.season_id ?? previousState?.season_id ?? null,
+    season_name: previousState?.season_name || null,
+    car_id: pushEvent.data?.car_id ?? previousState?.car_id ?? null,
+    car_class_id: pushEvent.data?.car_class_id ?? previousState?.car_class_id ?? null,
+    session_id:
+      pushEvent.data?.session_id ??
+      pushEvent.data?.target_session_id ??
+      previousState?.session_id ??
+      null,
+    subsession_id:
+      pushEvent.data?.subsession_id ?? previousState?.subsession_id ?? null,
+    start_time:
+      pushEvent.data?.start_time
+        ? new Date(pushEvent.data.start_time).toISOString()
+        : previousState?.start_time ?? null,
+    event_type: pushEvent.data?.event_type ?? previousState?.event_type ?? null,
+    reg_status: regStatus,
+    reg_status_reason: pushEvent.data?.reg_status_reason || null,
+  });
+
+  finalizeConfirmedQueueRegistration(confirmedState, previousState);
+  setCurrentPageRegistrationMode("withdraw");
+  syncCurrentPageRegistrationUi();
+  return true;
+}
+
+function queueKey(queueItem) {
+  return `${queueItem.season_id}:${getQueueEventType(queueItem)}:${new Date(queueItem.start_time).toISOString()}`;
+}
+
+function getCurrentTimeOffset() {
+  const offset = Number(window.irefCurrentTimeOffsetMs);
+  return Number.isFinite(offset) ? offset : 0;
+}
+
+function setCurrentTimeOffset(offsetMs) {
+  if (!Number.isFinite(offsetMs) || Math.abs(offsetMs) > maxClockSyncSkewMs) {
+    return getCurrentTimeOffset();
+  }
+
+  const normalizedOffsetMs = Math.round(offsetMs / 1000) * 1000;
+  window.irefCurrentTimeOffsetMs = normalizedOffsetMs;
+  return normalizedOffsetMs;
+}
+
+function parseCountdownTextToMs(text = "") {
+  const normalized = normalizeSearchText(text);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const clockMatch = normalized.match(/(\d{1,2}:\d{2}(?::\d{2})?)/);
+
+  if (clockMatch) {
+    const parts = clockMatch[1].split(":").map((part) => parseInt(part, 10));
+
+    if (parts.some((part) => Number.isNaN(part))) {
+      return null;
+    }
+
+    if (parts.length === 3) {
+      const [hours, minutes, seconds] = parts;
+      return ((hours * 60 * 60) + (minutes * 60) + seconds) * 1000;
+    }
+
+    const [minutes, seconds] = parts;
+    return ((minutes * 60) + seconds) * 1000;
+  }
+
+  const daysMatch = normalized.match(/(\d+)\s*d(?:ays?)?/);
+  const hoursMatch = normalized.match(/(\d+)\s*h(?:rs?|ours?)?/);
+  const minutesMatch = normalized.match(/(\d+)\s*m(?:ins?|inutes?)?/);
+  const secondsMatch = normalized.match(/(\d+)\s*s(?:ecs?|econds?)?/);
+
+  if (!daysMatch && !hoursMatch && !minutesMatch && !secondsMatch) {
+    return null;
+  }
+
+  const days = parseInt(daysMatch?.[1] || "0", 10);
+  const hours = parseInt(hoursMatch?.[1] || "0", 10);
+  const minutes = parseInt(minutesMatch?.[1] || "0", 10);
+  const seconds = parseInt(secondsMatch?.[1] || "0", 10);
+
+  return (
+    (((days * 24) + hours) * 60 * 60) +
+    (minutes * 60) +
+    seconds
+  ) * 1000;
+}
+
+function extractNextRaceCountdownMs(section) {
+  if (!section) {
+    return null;
+  }
+
+  const lines = getTextLines(section.innerText || "");
+  const countdownLine = lines.find((line) => /(Open Now|Opens Soon)$/i.test(line));
+
+  if (!countdownLine) {
+    return null;
+  }
+
+  return parseCountdownTextToMs(countdownLine);
+}
+
+function syncCurrentTimeOffset(section, sessionProps) {
+  const startTime = new Date(sessionProps?.session?.start_time).getTime();
+  const countdownMs = extractNextRaceCountdownMs(section);
+
+  if (Number.isNaN(startTime) || countdownMs === null) {
+    return false;
+  }
+
+  setCurrentTimeOffset(startTime - countdownMs - Date.now());
+  return true;
+}
+
+export function getCurrentTime() {
+  return Date.now() + getCurrentTimeOffset();
+}
+
+function canDirectRegisterSession(sessionPropsOrSession = {}) {
+  const session = sessionPropsOrSession?.session || sessionPropsOrSession;
+
+  return !!session?.session_id && session.preregister === true;
+}
+
+function isInsideQueueRegisterWindow(startTime) {
+  const parsedStartTime = new Date(startTime).getTime();
+
+  if (Number.isNaN(parsedStartTime)) {
+    return false;
+  }
+
+  const timeUntilStart = parsedStartTime - getCurrentTime();
+  return (
+    timeUntilStart <= autoRegisterLeadMs &&
+    timeUntilStart >= -autoRegisterGraceMs
+  );
+}
+
+function isQueueItemExpired(queueItem) {
+  const startTime = new Date(queueItem.start_time).getTime();
+
+  if (Number.isNaN(startTime)) {
+    return true;
+  }
+
+  return startTime < getCurrentTime() - queueRetentionMs;
+}
+
+function cleanupQueue(queue = ensureWatchQueue()) {
+  const deduped = new Map();
+
+  queue.forEach((item) => {
+    if (!item || isQueueItemExpired(item)) {
+      return;
+    }
+
+    deduped.set(queueKey(item), item);
+  });
+
+  return [...deduped.values()].sort(
+    (a, b) => new Date(a.start_time) - new Date(b.start_time)
+  );
+}
+
+function persistQueue() {
+  localStorage.setItem(persistStorageKey, JSON.stringify(cleanupQueue()));
+}
+
+function setWatchQueue(queue) {
+  window.watchQueue = cleanupQueue(queue);
+  persistQueue();
+  dispatchWatchQueueUpdated();
+}
+
+function formatTimeLabel(value) {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function loadQueue() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(persistStorageKey));
+
+    if (!Array.isArray(stored)) {
+      window.watchQueue = [];
+      dispatchWatchQueueUpdated();
+      return;
+    }
+
+    window.watchQueue = cleanupQueue(
+      stored
+        .map((item) => {
+          const startTime = new Date(item.start_time);
+
+          if (Number.isNaN(startTime.getTime())) {
+            return null;
+          }
+
+          return {
+            ...item,
+            event_type: item.event_type ?? raceEventType,
+            event_type_name: item.event_type_name || "Race",
+            auto_register_armed:
+              item.auto_register_armed !== false &&
+              startTime.getTime() > getCurrentTime(),
+            registration_open: item.registration_open === true,
+            start_time: startTime.toISOString(),
+            status: item.status === "found" && item.session_id ? "found" : "queued",
+            session_id: item.session_id ?? null,
+            subsession_id: item.subsession_id ?? null,
+            created_at: item.created_at || new Date().toISOString(),
+            last_attempt_at: item.last_attempt_at || null,
+            last_found_at: item.last_found_at || null,
+          };
+        })
+        .filter(Boolean)
+    );
+
+    persistQueue();
+    dispatchWatchQueueUpdated();
+  } catch {
+    window.watchQueue = [];
+    dispatchWatchQueueUpdated();
+  }
+}
+
+export function hydratePersistentAutoRegisterState() {
+  loadQueue();
+  loadRegistrationState();
+  return {
+    watchQueue: ensureWatchQueue(),
+    registrationState: getRegistrationState(),
+  };
+}
+
+function removeQueueItem(queueItem) {
+  setWatchQueue(
+    ensureWatchQueue().filter((item) => queueKey(item) !== queueKey(queueItem))
+  );
+}
+
+function getQueueEventType(item) {
+  if (item?.event_type !== null && item?.event_type !== undefined) {
+    return item.event_type;
+  }
+
+  return inferEventTypeFromName(item?.event_type_name || "") ?? raceEventType;
+}
+
+function inferEventTypeFromName(eventTypeName = "") {
+  const normalizedName = normalizeAliasText(eventTypeName);
+
+  if (!normalizedName) {
+    return null;
+  }
+
+  const matchedEntry = Object.entries(EVENT_TYPE_NAME_ALIASES).find(
+    ([, aliases]) => aliases.some((alias) => normalizedName.includes(alias))
+  );
+
+  return matchedEntry ? Number(matchedEntry[0]) : null;
+}
+
+function getSessionEventType(session = {}) {
+  const eventType = toNumber(session.event_type);
+
+  if (eventType !== null) {
+    return eventType;
+  }
+
+  return inferEventTypeFromName(session.event_type_name || "");
+}
+
+function getSessionEventName(session = {}) {
+  if (session.event_type_name) {
+    return session.event_type_name;
+  }
+
+  if (getSessionEventType(session) === practiceEventType) {
+    return "Practice";
+  }
+
+  if (getSessionEventType(session) === qualifyEventType) {
+    return "Qualify";
+  }
+
+  if (getSessionEventType(session) === raceEventType) {
+    return "Race";
+  }
+
+  return "Session";
+}
+
+function sessionMatchesQueueEvent(session, queueItem) {
+  const sessionEventType = getSessionEventType(session);
+  const queueEventType = getQueueEventType(queueItem);
+
+  if (sessionEventType !== null && queueEventType !== null && queueEventType !== undefined) {
+    return String(sessionEventType) === String(queueEventType);
+  }
+
+  return normalizeSearchText(getSessionEventName(session)) ===
+    normalizeSearchText(queueItem?.event_type_name || "");
+}
+
+function isRaceSession(session = {}) {
+  return getSessionEventType(session) === raceEventType;
+}
+
+function isQualifySession(session = {}) {
+  return getSessionEventType(session) === qualifyEventType;
+}
+
+function isPracticeSession(session = {}) {
+  return getSessionEventType(session) === practiceEventType;
+}
+
+function isQueueableSession(session = {}) {
+  return isRaceSession(session) || isQualifySession(session);
+}
+
+function isDirectRegisterableSession(session = {}) {
+  return isRaceSession(session) || isQualifySession(session) || isPracticeSession(session);
+}
+
+function makeQueueSlotKey(contentId, eventType, startTime) {
+  return `${contentId}|${eventType ?? raceEventType}|${new Date(startTime).toISOString()}`;
+}
+
+function parseQueueSlotKey(queueSlotKey = "") {
+  const parts = queueSlotKey.split("|");
+
+  if (parts.length === 2) {
+    return {
+      seasonId: parts[0],
+      eventType: raceEventType,
+      startTime: parts[1],
+    };
+  }
+
+  return {
+    seasonId: parts[0],
+    eventType: parts[1],
+    startTime: parts.slice(2).join("|"),
+  };
+}
+
+function getQueueItem(seasonId, startTime, eventType = raceEventType) {
+  const normalizedTime = new Date(startTime).toISOString();
+
+  return ensureWatchQueue().find(
+    (item) =>
+      Number(item.season_id) === Number(seasonId) &&
+      String(getQueueEventType(item)) === String(eventType) &&
+      new Date(item.start_time).toISOString() === normalizedTime
+  );
+}
+
+function findQueueIndex(seasonId, startTime, eventType = raceEventType) {
+  const normalizedTime = new Date(startTime).toISOString();
+
+  return ensureWatchQueue().findIndex(
+    (item) =>
+      Number(item.season_id) === Number(seasonId) &&
+      String(getQueueEventType(item)) === String(eventType) &&
+      new Date(item.start_time).toISOString() === normalizedTime
+  );
+}
+
+function findClosest(el, predicate) {
+  let node = el;
+
+  while (node && node !== document.body) {
+    if (predicate(node)) {
+      return node;
+    }
+
+    node = node.parentElement;
+  }
+
+  return null;
+}
+
+function findHeading(matcher) {
+  return [...document.querySelectorAll("h1, h2, h3, h4, h5, h6")].find((el) =>
+    matcher(normalizeText(el.textContent))
+  );
+}
+
+function getNextRaceEntryOptions() {
+  return {
+    visibleOnly: false,
+    skipSelectors: ["#iref-top-action-row", "#iref-top-queue-row", "#iref-ui-root"],
+  };
+}
+
+function getScopedSessionEntries(root = document, options = {}) {
+  const { visibleOnly = false, excludeTables = false } = options;
+
+  return getSessionActionEntries(root, {
+    ...getNextRaceEntryOptions(),
+    visibleOnly,
+  }).filter(({ button }) => !excludeTables || !button.closest("table"));
+}
+
+function compareElementsByViewport(left, right) {
+  const leftRect = left.getBoundingClientRect();
+  const rightRect = right.getBoundingClientRect();
+
+  if (leftRect.top !== rightRect.top) {
+    return leftRect.top - rightRect.top;
+  }
+
+  if (leftRect.left !== rightRect.left) {
+    return leftRect.left - rightRect.left;
+  }
+
+  return 0;
+}
+
+function findSessionCardSection(entry) {
+  if (!entry?.button) {
+    return null;
+  }
+
+  let node = entry.button.parentElement;
+  let best = null;
+
+  while (node && node !== document.body) {
+    if (typeof node.querySelector !== "function") {
+      node = node.parentElement;
+      continue;
+    }
+
+    if (node.querySelector("table")) {
+      break;
+    }
+
+    const entries = getScopedSessionEntries(node, {
+      visibleOnly: false,
+      excludeTables: true,
+    });
+
+    if (!entries.some(({ button }) => button === entry.button)) {
+      node = node.parentElement;
+      continue;
+    }
+
+    if (entries.length === 1 && getTextLines(node.innerText || "").length >= 4) {
+      best = node;
+    }
+
+    node = node.parentElement;
+  }
+
+  return best || findActionRowAnchor(entry.button)?.parentElement || entry.button.parentElement;
+}
+
+function findFallbackNextRaceEntry() {
+  return getScopedSessionEntries(document, {
+    visibleOnly: false,
+    excludeTables: true,
+  })
+    .filter(({ props }) => isQueueableSession(props?.session))
+    .map((entry) => ({
+      entry,
+      section: findSessionCardSection(entry),
+    }))
+    .filter(({ section }) => !!section)
+    .sort(
+      (left, right) =>
+        compareElementsByViewport(left.section, right.section) ||
+        compareElementsByViewport(left.entry.button, right.entry.button)
+    )[0]?.entry || null;
+}
+
+function findStructuredSessionTableSection(predicate, excludeSection = null) {
+  const entry = getSessionActionEntries(document, { visibleOnly: false }).find(
+    ({ button, props }) =>
+      !excludeSection?.contains(button) &&
+      (!predicate || predicate(props, button))
+  );
+
+  if (!entry) {
+    return null;
+  }
+
+  return findClosest(entry.button, (node) =>
+    node !== entry.button &&
+    typeof node.querySelector === "function" &&
+    !!node.querySelector("table")
+  );
+}
+
+function findNextRaceSection() {
+  const heading = findHeading((text) =>
+    startsWithWebUiLabel(text, "nextRacePrefix")
+  );
+
+  if (!heading) {
+    return findSessionCardSection(findFallbackNextRaceEntry());
+  }
+
+  return findClosest(heading, (node) => {
+    const text = normalizeText(node.innerText || "");
+    return (
+      startsWithWebUiLabel(text, "nextRacePrefix") &&
+      (!!getFirstSessionActionEntry(node, getNextRaceEntryOptions()) ||
+        includesWebUiLabel(text, "upNext") ||
+        includesWebUiLabel(text, "raceDuration"))
+    );
+  }) || findSessionCardSection(findFallbackNextRaceEntry());
+}
+
+function findAvailableSessionsSection() {
+  const description = [...document.querySelectorAll("p, span, div")].find((el) =>
+    includesWebUiLabel(el.textContent || "", "availableSessionsDescription")
+  );
+  const describedSection = description
+    ? findClosest(description, (node) =>
+        node !== description &&
+        typeof node.querySelector === "function" &&
+        !!node.querySelector("table")
+      )
+    : null;
+
+  if (describedSection) {
+    return describedSection;
+  }
+
+  return findStructuredSessionTableSection(
+    (props) => isQueueableSession(props?.session),
+    findNextRaceSection()
+  );
+}
+
+function findPracticeSessionsSection() {
+  return findStructuredSessionTableSection(
+    (props) => isPracticeSession(props?.session),
+    findNextRaceSection()
+  );
+}
+
+function findCurrentlyRacingSection() {
+  const heading = findHeading((text) =>
+    normalizeSearchText(text).startsWith("currently racing")
+  );
+
+  if (!heading) {
+    return null;
+  }
+
+  return findClosest(heading, (node) => {
+    const text = normalizeSearchText(node.innerText || "");
+    return (
+      text.includes("currently racing") &&
+      text.includes("view all drivers currently racing")
+    );
+  });
+}
+
+function restoreNativeSessionActions(section) {
+  if (!section) {
+    return;
+  }
+
+  section.querySelectorAll(".iref-session-view-hidden").forEach((element) => {
+    element.classList.remove("iref-session-view-hidden");
+  });
+  section.querySelectorAll(".iref-queue-btn-inline").forEach((element) => {
+    element.remove();
+  });
+  section.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+    element.remove();
+  });
+}
+
+function restoreNativeTopActionRow(section) {
+  if (!section) {
+    return;
+  }
+
+  section.querySelectorAll(".iref-native-action-hidden").forEach((element) => {
+    element.classList.remove("iref-native-action-hidden");
+  });
+  section.querySelector("#iref-top-action-row")?.remove();
+}
+
+function findNativeWithdrawAction() {
+  const nextRaceSection = findNextRaceSection();
+  const nextRaceEntry = nextRaceSection ? findNextRaceProps(nextRaceSection) : null;
+  const actionScope =
+    (nextRaceEntry?.button && findActionRowAnchor(nextRaceEntry.button)?.parentElement) ||
+    nextRaceSection;
+
+  if (!actionScope) {
+    return null;
+  }
+
+  const nativeSessionButtons = new Set(
+    getSessionActionEntries(actionScope, { visibleOnly: false }).map(
+      ({ button }) => button
+    )
+  );
+  const withdrawLabels = getWebUiLabels("withdrawAction").map(normalizeSearchText);
+  const visibleButtons = [...actionScope.querySelectorAll("button, a")]
+    .filter((el) => !el.closest("#iref-top-action-row"))
+    .filter((el) => !el.closest("#iref-top-queue-row"))
+    .filter((el) => !el.closest("#iref-ui-root"))
+    .filter((el) => isVisible(el))
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
+
+  const explicitNativeWithdraw = visibleButtons.find((el) =>
+    withdrawLabels.includes(normalizeSearchText(el.innerText || el.textContent || ""))
+  );
+
+  if (explicitNativeWithdraw) {
+    return explicitNativeWithdraw;
+  }
+
+  const candidateButtons = [...actionScope.querySelectorAll("button, a")]
+    .filter((el) => !el.closest("#iref-top-action-row"))
+    .filter((el) => !el.closest("#iref-top-queue-row"))
+    .filter((el) => !el.closest("#iref-ui-root"))
+    .filter((el) => isVisible(el))
+    .filter((el) => !nativeSessionButtons.has(el))
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
+
+  return (
+    candidateButtons.find((el) =>
+      withdrawLabels.includes(
+        normalizeSearchText(el.innerText || el.textContent || "")
+      )
+    ) || candidateButtons[0] || null
+  );
+}
+
+function isElementDisabled(el) {
+  if (!el) {
+    return true;
+  }
+
+  return (
+    el.disabled === true ||
+    el.getAttribute("aria-disabled") === "true" ||
+    el.classList.contains("disabled")
+  );
+}
+
+function clickActionElement(el) {
+  if (!el || isElementDisabled(el)) {
+    return false;
+  }
+
+  el.click();
+  return true;
+}
+
+function getActionLabels(key, fallback = []) {
+  return [
+    ...new Set(
+      [...getWebUiLabels(key), ...fallback]
+        .map(normalizeSearchText)
+        .filter(Boolean)
+    ),
+  ];
+}
+
+function getNativeConfirmationLabels(kind = "generic") {
+  const registerLabels = getActionLabels("registerAction", [
+    "Register",
+    "Registrarse",
+    "Registrieren",
+    "S'inscrire",
+    "Iscriviti",
+    "Registar",
+    "Inscrever-se",
+  ]);
+  const withdrawLabels = getActionLabels("withdrawAction", [
+    "Withdraw",
+    "Cancel Registration",
+  ]);
+  const confirmLabels = [
+    "confirm",
+    "continue",
+    "yes",
+    "ok",
+    "proceed",
+    "submit",
+    "confirmar",
+    "continuar",
+    "sim",
+  ].map(normalizeSearchText);
+  const actionLabels =
+    kind === "withdraw"
+      ? withdrawLabels
+      : kind === "register"
+        ? registerLabels
+        : [...registerLabels, ...withdrawLabels];
+
+  return {
+    actionLabels,
+    primaryLabels: [...actionLabels, ...confirmLabels],
+  };
+}
+
+function getVisibleActionButtons(root = document) {
+  return [...root.querySelectorAll("button, a, [role='button']")]
+    .filter((el) => !el.closest("#iref-ui-root"))
+    .filter((el) => isVisible(el))
+    .filter((el) => !isElementDisabled(el))
+    .filter((el) => !!normalizeText(el.innerText || el.textContent || ""));
+}
+
+function getDialogContext(node) {
+  return findClosest(node, (candidate) => {
+    if (!candidate || candidate === document.body || candidate === document.documentElement) {
+      return false;
+    }
+
+    if (candidate.closest("#iref-ui-root")) {
+      return false;
+    }
+
+    if (!isVisible(candidate)) {
+      return false;
+    }
+
+    const role = candidate.getAttribute?.("role");
+    const ariaModal = candidate.getAttribute?.("aria-modal");
+    const hasModalSelector =
+      typeof candidate.matches === "function" &&
+      candidate.matches(
+        "[data-radix-dialog-content], [data-radix-portal], .ReactModal__Content, .modal, [class*='modal'], [class*='dialog']"
+      );
+
+    return role === "dialog" || ariaModal === "true" || hasModalSelector;
+  });
+}
+
+function hasMatchingLabel(text, labels) {
+  const normalized = normalizeSearchText(text);
+
+  return labels.some(
+    (label) =>
+      normalized === label ||
+      normalized.startsWith(`${label} `) ||
+      normalized.endsWith(` ${label}`) ||
+      normalized.includes(label)
+  );
+}
+
+function tryAutoConfirmNativePrompt() {
+  const confirmationState = getNativeConfirmationState();
+
+  if (!confirmationState) {
+    return false;
+  }
+
+  const { actionLabels, primaryLabels } = getNativeConfirmationLabels(
+    confirmationState.kind
+  );
+  const candidates = getVisibleActionButtons()
+    .map((button) => {
+      const label = normalizeText(button.innerText || button.textContent || "");
+      const dialog = getDialogContext(button);
+
+      if (!dialog) {
+        return null;
+      }
+
+      return {
+        button,
+        label,
+        normalizedLabel: normalizeSearchText(label),
+        dialog,
+        dialogText: normalizeSearchText(dialog.innerText || dialog.textContent || ""),
+      };
+    })
+    .filter(Boolean);
+
+  if (!candidates.length) {
+    return false;
+  }
+
+  let match =
+    candidates.find(({ normalizedLabel }) => actionLabels.includes(normalizedLabel)) ||
+    candidates.find(({ label }) => hasMatchingLabel(label, actionLabels)) ||
+    candidates.find(
+      ({ label, dialogText }) =>
+        hasMatchingLabel(label, primaryLabels) && hasMatchingLabel(dialogText, actionLabels)
+    );
+
+  if (!match) {
+    const groupedByDialog = new Map();
+
+    candidates.forEach((candidate) => {
+      const existing = groupedByDialog.get(candidate.dialog) || [];
+      existing.push(candidate);
+      groupedByDialog.set(candidate.dialog, existing);
+    });
+
+    match =
+      [...groupedByDialog.values()]
+        .filter(
+          (group) =>
+            group.length === 1 && hasMatchingLabel(group[0].dialogText, actionLabels)
+        )
+        .map((group) => group[0])[0] || null;
+  }
+
+  if (!match) {
+    return false;
+  }
+
+  log(`🤖 Auto-confirming native ${confirmationState.kind} prompt`);
+  const clicked = clickActionElement(match.button);
+
+  if (clicked) {
+    clearNativeConfirmationState();
+  }
+
+  return clicked;
+}
+
+function detectNativeActionKind(button) {
+  if (!button || button.closest("#iref-ui-root")) {
+    return null;
+  }
+
+  if (getDialogContext(button)) {
+    return null;
+  }
+
+  const text = normalizeText(button.innerText || button.textContent || "");
+
+  if (!text) {
+    return null;
+  }
+
+  if (hasMatchingLabel(text, getActionLabels("withdrawAction", ["Withdraw"]))) {
+    return "withdraw";
+  }
+
+  if (hasMatchingLabel(text, getActionLabels("registerAction", ["Register"]))) {
+    return "register";
+  }
+
+  return null;
+}
+
+function installNativeActionInterceptors() {
+  if (window.__irefNativeActionInterceptorInstalled) {
+    return;
+  }
+
+  document.addEventListener(
+    "click",
+    (event) => {
+      const button = event.target instanceof Element
+        ? event.target.closest("button, a, [role='button']")
+        : null;
+      const actionKind = detectNativeActionKind(button);
+
+      if (actionKind) {
+        armNativeConfirmation(actionKind, { source: "native-click" });
+      }
+    },
+    true
+  );
+
+  window.__irefNativeActionInterceptorInstalled = true;
+}
+
+function tryWithdrawCurrentSession(options = {}) {
+  const { preferNative = false, autoConfirm = true } = options;
+  const nativeWithdraw = findNativeWithdrawAction();
+
+  if (!preferNative) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "ws-withdraw" });
+    }
+
+    if (ws.withdraw()) {
+      return true;
+    }
+  }
+
+  if (nativeWithdraw) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "native-withdraw" });
+    }
+
+    return clickActionElement(nativeWithdraw);
+  }
+
+  if (preferNative) {
+    if (autoConfirm) {
+      armNativeConfirmation("withdraw", { source: "ws-withdraw-fallback" });
+    }
+
+    return ws.withdraw();
+  }
+
+  if (autoConfirm) {
+    clearNativeConfirmationState();
+  }
+
+  return false;
+}
+
+function findNextRaceProps(section) {
+  const nextRaceEntry = section
+    ? getFirstSessionActionEntry(section, getNextRaceEntryOptions())
+    : findFallbackNextRaceEntry();
+
+  if (!nextRaceEntry?.button || !nextRaceEntry?.props?.session) {
+    return null;
+  }
+
+  return nextRaceEntry;
+}
+
+function seasonsMatch(state, seasonId, seasonName = "") {
+  if (!state) {
+    return false;
+  }
+
+  if (seasonId !== null && seasonId !== undefined && state.season_id !== null && state.season_id !== undefined) {
+    return Number(state.season_id) === Number(seasonId);
+  }
+
+  if (seasonName && state.season_name) {
+    return formatSeasonName(state.season_name) === formatSeasonName(seasonName);
+  }
+
+  return false;
+}
+
+function registrationMatchesCurrentPage(state, sessionProps) {
+  if (!state) {
+    return false;
+  }
+
+  if (state.source_path && state.source_path === location.pathname) {
+    return true;
+  }
+
+  if (state.source_url) {
+    try {
+      if (new URL(state.source_url).pathname === location.pathname) {
+        return true;
+      }
+    } catch {}
+  }
+
+  return seasonsMatch(
+    state,
+    sessionProps?.contentId ?? sessionProps?.session?.season_id ?? null,
+    sessionProps?.session?.season_name || ""
+  );
+}
+
+function hasActiveRegistration(state = getRegistrationState()) {
+  return !!state && (state.status === "registering" || state.status === "registered");
+}
+
+function registrationTargetsMatch(currentState, nextState) {
+  if (!currentState || !nextState) {
+    return false;
+  }
+
+  if (
+    currentState.subsession_id &&
+    nextState.subsession_id &&
+    Number(currentState.subsession_id) === Number(nextState.subsession_id)
+  ) {
+    return true;
+  }
+
+  if (
+    currentState.session_id &&
+    nextState.session_id &&
+    Number(currentState.session_id) === Number(nextState.session_id)
+  ) {
+    return true;
+  }
+
+  if (
+    currentState.season_id !== null &&
+    currentState.season_id !== undefined &&
+    nextState.season_id !== null &&
+    nextState.season_id !== undefined &&
+    Number(currentState.season_id) === Number(nextState.season_id) &&
+    currentState.start_time &&
+    nextState.start_time
+  ) {
+    return new Date(currentState.start_time).toISOString() === new Date(nextState.start_time).toISOString();
+  }
+
+  return false;
+}
+
+function getCurrentSlotLabel(section, startTime) {
+  const exactLabel = [...section.querySelectorAll("p, span, div")].find((node) =>
+    /^\d{1,2}:\d{2}$/.test(normalizeText(node.textContent))
+  );
+
+  if (exactLabel) {
+    return normalizeText(exactLabel.textContent);
+  }
+
+  return formatTimeLabel(startTime);
+}
+
+function buildSlotFromLabel(baseDate, label, minimumDate) {
+  const match = label.match(/^(\d{1,2}):(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const candidate = new Date(baseDate);
+  candidate.setHours(parseInt(match[1], 10), parseInt(match[2], 10), 0, 0);
+
+  while (candidate <= minimumDate) {
+    candidate.setDate(candidate.getDate() + 1);
+  }
+
+  return {
+    label,
+    start_time: candidate.toISOString(),
+  };
+}
+
+function getQueueSlots(section, sessionProps) {
+  if (!sessionProps?.session?.start_time) {
+    return [];
+  }
+
+  const sessionStart = new Date(sessionProps.session.start_time);
+
+  if (Number.isNaN(sessionStart.getTime())) {
+    return [];
+  }
+
+  const slots = [
+    {
+      label: getCurrentSlotLabel(section, sessionStart),
+      start_time: sessionStart.toISOString(),
+    },
+  ];
+  const lines = getTextLines(section.innerText || "");
+  const upNextLine = lines.find((line) => startsWithWebUiLabel(line, "upNext"));
+  const candidateLine =
+    upNextLine ||
+    lines.find((line) => (line.match(/\b\d{1,2}:\d{2}\b/g) || []).length > 1);
+  const labels = [...new Set(candidateLine?.match(/\b\d{1,2}:\d{2}\b/g) || [])];
+  let previousDate = sessionStart;
+
+  labels.forEach((label) => {
+    const slot = buildSlotFromLabel(sessionStart, label, previousDate);
+
+    if (!slot) {
+      return;
+    }
+
+    previousDate = new Date(slot.start_time);
+    slots.push(slot);
+  });
+
+  return slots;
+}
+
+function getCarSelectionProps(section, contentId) {
+  const candidates = [...section.querySelectorAll("div, p, h2, h3, button, span")];
+
+  for (const candidate of candidates) {
+    const props = findMemoizedProps(
+      candidate,
+      (value) =>
+        Array.isArray(value.cars) &&
+        Array.isArray(value.carClassIds) &&
+        (value.seasonId === undefined || Number(value.seasonId) === Number(contentId))
+    );
+
+    if (props) {
+      return props;
+    }
+  }
+
+  return null;
+}
+
+function parseStoredCar(contentId) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`selected_car_season_${contentId}`));
+
+    if (!stored || typeof stored !== "object") {
+      return null;
+    }
+
+    const carId = stored.car_id ?? stored.carId ?? null;
+    const carClassId = stored.car_class_id ?? stored.carClassId ?? null;
+
+    if (!carId || !carClassId) {
+      return null;
+    }
+
+    return {
+      car_id: carId,
+      car_class_id: carClassId,
+      car_name: stored.car_name ?? stored.carName ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storeSelectedCar(contentId, selectedCar) {
+  if (!selectedCar?.car_id || !selectedCar?.car_class_id) {
+    return;
+  }
+
+  localStorage.setItem(
+    `selected_car_season_${contentId}`,
+    JSON.stringify(selectedCar)
+  );
+}
+
+function resolveCarClassId(car, fallbackClassIds = []) {
+  if (!car) {
+    return fallbackClassIds[0] ?? null;
+  }
+
+  if (car.car_class_id) {
+    return car.car_class_id;
+  }
+
+  if (Array.isArray(car.car_classes) && car.car_classes.length > 0) {
+    return car.car_classes[0].car_class_id ?? fallbackClassIds[0] ?? null;
+  }
+
+  return fallbackClassIds[0] ?? null;
+}
+
+function enrichStoredCarSelection(contentId, storedCar, cars = [], carClassIds = []) {
+  if (!storedCar?.car_id || !storedCar?.car_class_id) {
+    return storedCar;
+  }
+
+  const matchedCar = cars.find((car) => Number(car.car_id) === Number(storedCar.car_id));
+
+  if (!matchedCar) {
+    return storedCar;
+  }
+
+  const enrichedSelection = {
+    car_id: storedCar.car_id,
+    car_class_id: storedCar.car_class_id || resolveCarClassId(matchedCar, carClassIds),
+    car_name: storedCar.car_name || matchedCar.car_name || null,
+  };
+
+  storeSelectedCar(contentId, enrichedSelection);
+  return enrichedSelection;
+}
+
+function alertChooseCar() {
+  window.alert("Choose a car!");
+}
+
+function getSelectedCar(contentId, sessionProps, section) {
+  const storedCar = parseStoredCar(contentId);
+  const carSelectionProps =
+    getCarSelectionProps(section, contentId) ||
+    (section !== document ? getCarSelectionProps(document, contentId) : null);
+  const cars = Array.isArray(carSelectionProps?.cars) ? carSelectionProps.cars : [];
+  const carClassIds = Array.isArray(carSelectionProps?.carClassIds)
+    ? carSelectionProps.carClassIds
+    : [];
+
+  if (storedCar) {
+    return enrichStoredCarSelection(contentId, storedCar, cars, carClassIds);
+  }
+
+  if (!carSelectionProps) {
+    log(`🚫 No car selection context found for series ${contentId}`);
+    alertChooseCar();
+    return null;
+  }
+
+  const preselectedCarId =
+    sessionProps?.preselectedCarId ?? carSelectionProps?.preselectedCarId ?? null;
+
+  if (preselectedCarId) {
+    const selectedCar = cars.find(
+      (car) => Number(car.car_id) === Number(preselectedCarId)
+    );
+
+    if (selectedCar) {
+      return {
+        car_id: selectedCar.car_id,
+        car_class_id: resolveCarClassId(selectedCar, carClassIds),
+        car_name: selectedCar.car_name || null,
+      };
+    }
+  }
+
+  if (cars.length === 1) {
+    const resolvedCar = {
+      car_id: cars[0].car_id,
+      car_class_id: resolveCarClassId(cars[0], carClassIds),
+      car_name: cars[0].car_name || null,
+    };
+
+    storeSelectedCar(contentId, resolvedCar);
+    return resolvedCar;
+  }
+
+  log(`🚫 Queue needs a selected car for series ${contentId}`);
+  alertChooseCar();
+  return null;
+}
+
+function makeQueueItem(sessionProps, slot, selectedCar) {
+  const session = sessionProps.session || {};
+  const eventType = getSessionEventType(session);
+
+  return {
+    car_id: selectedCar.car_id,
+    car_class_id: selectedCar.car_class_id,
+    car_name: selectedCar.car_name || null,
+    auto_register_armed: true,
+    event_type: eventType ?? raceEventType,
+    event_type_name: getSessionEventName(session),
+    season_id: sessionProps.contentId ?? session.season_id,
+    season_name: formatSeasonName(session.season_name || ""),
+    start_time: new Date(slot.start_time).toISOString(),
+    start_label: slot.label || formatTimeLabel(slot.start_time),
+    track_name: session.track_name || session.track?.track_name || null,
+    source_path: location.pathname,
+    source_url: location.href,
+    created_at: new Date().toISOString(),
+    last_attempt_at: null,
+    last_found_at: null,
+    registration_open: canDirectRegisterSession(sessionProps),
+    status: "queued",
+    session_id: null,
+    subsession_id: null,
+  };
+}
+
+function buildRegistrationStateFromQueueItem(queueItem) {
+  if (!queueItem) {
+    return null;
+  }
+
+  return {
+    status: "registered",
+    source: "queue",
+    confirmed_by_site: false,
+    season_id: queueItem.season_id,
+    season_name: queueItem.season_name,
+    car_id: queueItem.car_id,
+    car_class_id: queueItem.car_class_id,
+    car_name: queueItem.car_name || null,
+    event_type: getQueueEventType(queueItem),
+    event_type_name: queueItem.event_type_name || "Race",
+    session_id: queueItem.session_id ?? null,
+    subsession_id: queueItem.subsession_id ?? null,
+    start_time: queueItem.start_time,
+    start_label: queueItem.start_label,
+    track_name: queueItem.track_name || null,
+    source_path: queueItem.source_path,
+    source_url: queueItem.source_url,
+  };
+}
+
+function makeQueueItemFromRegistrationState(state) {
+  if (
+    !state?.season_id ||
+    !state.start_time ||
+    !state.car_id ||
+    !state.car_class_id
+  ) {
+    return null;
+  }
+
+  const startTime = new Date(state.start_time);
+
+  if (Number.isNaN(startTime.getTime())) {
+    return null;
+  }
+
+  const eventType = state.event_type ?? raceEventType;
+
+  return {
+    car_id: state.car_id,
+    car_class_id: state.car_class_id,
+    car_name: state.car_name || null,
+    auto_register_armed: true,
+    event_type: eventType,
+    event_type_name:
+      state.event_type_name ||
+      (Number(eventType) === qualifyEventType ? "Qualify" : "Race"),
+    season_id: state.season_id,
+    season_name: formatSeasonName(state.season_name || ""),
+    start_time: startTime.toISOString(),
+    start_label: state.start_label || formatTimeLabel(startTime),
+    track_name: state.track_name || null,
+    source_path: state.source_path || location.pathname,
+    source_url: state.source_url || location.href,
+    created_at: new Date().toISOString(),
+    last_attempt_at: null,
+    last_found_at: null,
+    registration_open: !!state.session_id,
+    status: "queued",
+    session_id: state.session_id ?? null,
+    subsession_id: state.subsession_id ?? null,
+  };
+}
+
+function canRequeueDisplacedRegistration(displacedState, nextState) {
+  if (
+    !shouldRequeueDisplacedRegistration() ||
+    !hasActiveRegistration(displacedState) ||
+    !displacedState?.season_id ||
+    !displacedState.start_time ||
+    !displacedState.car_id ||
+    !displacedState.car_class_id ||
+    registrationTargetsMatch(displacedState, nextState)
+  ) {
+    return false;
+  }
+
+  const displacedStartTime = new Date(displacedState.start_time).getTime();
+  const nextStartTime = new Date(nextState?.start_time).getTime();
+
+  if (
+    Number.isNaN(displacedStartTime) ||
+    Number.isNaN(nextStartTime) ||
+    displacedStartTime <= nextStartTime
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function requeueDisplacedRegistration(displacedState, nextState) {
+  if (!canRequeueDisplacedRegistration(displacedState, nextState)) {
+    return false;
+  }
+
+  const queueItem = makeQueueItemFromRegistrationState(displacedState);
+
+  if (!queueItem) {
+    return false;
+  }
+
+  if (getQueueItem(queueItem.season_id, queueItem.start_time, queueItem.event_type)) {
+    return false;
+  }
+
+  setWatchQueue([...ensureWatchQueue(), queueItem]);
+  log(
+    `📝 Re-queued displaced ${queueItem.event_type_name.toLowerCase()} session for ${queueItem.season_name} ${queueItem.start_label}`
+  );
+  return true;
+}
+
+function setButtonState(button, queueItem, idleLabel) {
+  if (!button) {
+    return;
+  }
+
+  button.classList.remove(
+    "iref-queue-btn-queued",
+    "iref-queue-btn-found",
+    "iref-queue-btn-registering",
+    "danger"
+  );
+  button.disabled = false;
+
+  if (!queueItem) {
+    button.textContent = idleLabel;
+    return;
+  }
+
+  if (queueItem.status === "registering") {
+    button.textContent = "Registering";
+    button.disabled = true;
+    button.classList.add("iref-queue-btn-registering");
+    return;
+  }
+
+  if (queueItem.status === "found") {
+    button.textContent = "Register now";
+    button.classList.add("iref-queue-btn-found");
+    return;
+  }
+
+  button.textContent = "Queued";
+  button.classList.add("iref-queue-btn-queued");
+}
+
+function createQueueButton(idSuffix, label) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = `iref-queue-${idSuffix}`;
+  button.className = "iref-queue-btn";
+  button.textContent = label;
+  return button;
+}
+
+function ensureSessionQueueRow(container, queueSlotKey) {
+  if (!container) {
+    return null;
+  }
+
+  const rowId = `iref-session-queue-row-${slugify(queueSlotKey)}`;
+  let row = container.querySelector(`#${CSS.escape(rowId)}`);
+
+  if (row) {
+    return row;
+  }
+
+  row = document.createElement("div");
+  row.id = rowId;
+  row.className = "iref-session-queue-row";
+  container.appendChild(row);
+  return row;
+}
+
+function handleMissingCar(button, contentId) {
+  log(`🚫 No car selected for queue in series ${contentId}`);
+  button.textContent = "Select Car";
+  button.classList.add("danger");
+
+  window.setTimeout(() => {
+    button.classList.remove("danger");
+    button.textContent = button.dataset.irefIdleLabel || "Queue";
+  }, 2500);
+}
+
+function markQueueItemFound(queueItem, session) {
+  if (!queueItem || !session?.session_id) {
+    return false;
+  }
+
+  queueItem.session_id = session.session_id;
+  queueItem.subsession_id = session.subsession_id ?? null;
+  queueItem.registration_open = canDirectRegisterSession(session);
+  queueItem.status = "found";
+  queueItem.last_found_at = new Date().toISOString();
+  persistQueue();
+  return true;
+}
+
+function canQueueItemRegisterNow(queueItem) {
+  if (!queueItem?.session_id) {
+    return false;
+  }
+
+  const currentRegistrationState = getRegistrationState();
+
+  if (!hasActiveRegistration(currentRegistrationState)) {
+    return true;
+  }
+
+  if (currentRegistrationState.status === "registering") {
+    return false;
+  }
+
+  return !registrationTargetsMatch(
+    currentRegistrationState,
+    buildRegistrationStateFromQueueItem(queueItem)
+  );
+}
+
+function resolveImmediateQueueSession(sessionProps, slot, section) {
+  if (!sessionProps?.session?.start_time || !slot?.start_time) {
+    return null;
+  }
+
+  const slotStart = new Date(slot.start_time).toISOString();
+  const currentStart = new Date(sessionProps.session.start_time).toISOString();
+
+  if (slotStart !== currentStart) {
+    return null;
+  }
+
+  const registerableProps = resolveRegisterableSessionProps(section, sessionProps);
+
+  if (!registerableProps?.session?.session_id) {
+    return null;
+  }
+
+  return registerableProps.session;
+}
+
+function updateQueueReadiness(queueItem, session = null) {
+  if (!queueItem || queueItem.status !== "queued") {
+    return false;
+  }
+
+  return markQueueItemFound(
+    queueItem,
+    session || {
+      session_id: queueItem.session_id,
+      subsession_id: queueItem.subsession_id ?? null,
+    }
+  );
+}
+
+function queueSlot(sessionProps, slot, button, section) {
+  const selectedCar = getSelectedCar(sessionProps.contentId, sessionProps, section);
+
+  if (!selectedCar) {
+    handleMissingCar(button, sessionProps.contentId);
+    return;
+  }
+
+  const queueItem = makeQueueItem(sessionProps, slot, selectedCar);
+
+  if (getQueueItem(queueItem.season_id, queueItem.start_time, queueItem.event_type)) {
+    log(`🚫 ${queueItem.season_name} ${queueItem.start_label} is already queued`);
+    return;
+  }
+
+  const immediateSession = resolveImmediateQueueSession(sessionProps, slot, section);
+
+  if (immediateSession) {
+    queueItem.session_id = immediateSession.session_id;
+    queueItem.subsession_id = immediateSession.subsession_id ?? null;
+  }
+
+  const queue = [...ensureWatchQueue(), queueItem];
+  setWatchQueue(queue);
+
+  if (immediateSession && updateQueueReadiness(queueItem, immediateSession)) {
+    log(`🟦 ${queueItem.season_name} ${queueItem.start_label} is ready for Register now`);
+    return;
+  }
+
+  log(`📝 Queued ${queueItem.season_name} for ${queueItem.start_label}`);
+}
+
+function syncQueueButtons() {
+  document.querySelectorAll("[data-iref-queue-key]").forEach((button) => {
+    const { seasonId, eventType, startTime } = parseQueueSlotKey(
+      button.dataset.irefQueueKey
+    );
+    const queueItem = getQueueItem(seasonId, startTime, eventType);
+    setButtonState(button, queueItem, button.dataset.irefIdleLabel || "Queue");
+  });
+}
+
+function createTopQueueGroup(kind, title, subtitle) {
+  const group = document.createElement("div");
+  group.className = `iref-top-queue-group iref-top-queue-group-${kind}`;
+  group.dataset.irefQueueGroup = kind;
+
+  const header = document.createElement("div");
+  header.className = "iref-top-queue-header";
+
+  const titleEl = document.createElement("div");
+  titleEl.className = "iref-top-queue-title";
+  titleEl.textContent = title;
+
+  const subtitleEl = document.createElement("div");
+  subtitleEl.className = "iref-top-queue-subtitle";
+  subtitleEl.textContent = subtitle;
+
+  const buttonsEl = document.createElement("div");
+  buttonsEl.className = "iref-top-queue-buttons";
+
+  header.append(titleEl, subtitleEl);
+  group.append(header, buttonsEl);
+  return group;
+}
+
+function ensureTopQueueGroup(row, kind, title, subtitle) {
+  let group = row.querySelector(`[data-iref-queue-group="${kind}"]`);
+
+  if (!group) {
+    group = createTopQueueGroup(kind, title, subtitle);
+    row.appendChild(group);
+  }
+
+  return group;
+}
+
+function collectSessionQueueEntries(predicate, skipButtons = []) {
+  const skipped = new Set(skipButtons.filter(Boolean));
+
+  return getSessionButtonEntries(document, { skipButtons })
+    .filter(({ button, props }) =>
+      !skipped.has(button) &&
+      props?.session &&
+      Number(props.session.max_team_drivers || 1) <= 1 &&
+      predicate(props.session)
+    )
+    .map(({ props }) => ({
+      sessionProps: props,
+      slot: {
+        label: formatTimeLabel(props.session.start_time),
+        start_time: new Date(props.session.start_time).toISOString(),
+      },
+      section: findNextRaceSection() || document.body,
+    }));
+}
+
+function syncTopQueueButtonList(buttonsEl, entries, labelForEntry) {
+  const entryKeys = new Set(
+    entries.map(({ sessionProps, slot }) =>
+      makeQueueSlotKey(
+        sessionProps.contentId,
+        getSessionEventType(sessionProps.session),
+        slot.start_time
+      )
+    )
+  );
+
+  [...buttonsEl.querySelectorAll("[data-iref-queue-key]")].forEach((button) => {
+    if (!entryKeys.has(button.dataset.irefQueueKey)) {
+      button.remove();
+    }
+  });
+
+  entries.forEach((entry, index) => {
+    const { sessionProps, slot, section } = entry;
+    const eventType = getSessionEventType(sessionProps.session);
+    const label = labelForEntry(entry, index);
+    const slotKey = makeQueueSlotKey(
+      sessionProps.contentId,
+      eventType,
+      slot.start_time
+    );
+    let button = buttonsEl.querySelector(
+      `[data-iref-queue-key="${CSS.escape(slotKey)}"]`
+    );
+
+    if (!button) {
+      button = createQueueButton(
+        `${slugify(String(sessionProps.contentId))}-${slugify(String(eventType))}-${slugify(slot.start_time)}-top`,
+        label
+      );
+      button.classList.add("iref-queue-btn-top");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        handleQueueButtonAction(button, sessionProps, slot, section);
+      });
+    }
+
+    button.dataset.irefIdleLabel = label;
+    button.dataset.irefQueueKey = slotKey;
+    buttonsEl.appendChild(button);
+  });
+}
+
+function handleQueueButtonAction(button, sessionProps, slot, section) {
+  const eventType = getSessionEventType(sessionProps.session);
+  const currentQueueItem = getQueueItem(
+    sessionProps.contentId,
+    slot.start_time,
+    eventType
+  );
+
+  if (currentQueueItem?.status === "found") {
+    activateQueueItem(
+      findQueueIndex(sessionProps.contentId, slot.start_time, eventType),
+      { manual: true }
+    );
+    return;
+  }
+
+  if (currentQueueItem) {
+    removeQueueItem(currentQueueItem);
+    return;
+  }
+
+  queueSlot(sessionProps, slot, button, section);
+}
+
+function ensureTopQueueButtons(section, sessionProps) {
+  const nextRace = findNextRaceProps(section);
+  const nativeButtonRow = findClosest(
+    nextRace?.button,
+    (node) => node.querySelector("button")
+  );
+  const actionAnchor = section.querySelector("#iref-top-action-row") || nativeButtonRow;
+  const actionHost = actionAnchor?.parentElement;
+
+  if (!actionAnchor || !actionHost || !sessionProps?.session) {
+    return;
+  }
+
+  let row = section.querySelector("#iref-top-queue-row");
+
+  if (!row) {
+    row = document.createElement("div");
+    row.id = "iref-top-queue-row";
+    row.className = "iref-top-queue-row";
+    actionHost.insertBefore(row, actionAnchor.nextSibling);
+  } else if (row.parentElement !== actionHost) {
+    actionHost.insertBefore(row, actionAnchor.nextSibling);
+  } else if (row.previousElementSibling !== actionAnchor) {
+    actionHost.insertBefore(row, actionAnchor.nextSibling);
+  }
+
+  const raceGroup = ensureTopQueueGroup(
+    row,
+    "race",
+    "Race Queue",
+    "Upcoming race sessions"
+  );
+  const qualifyGroup = ensureTopQueueGroup(
+    row,
+    "qualify",
+    "Qualify Queue",
+    "Upcoming qualify sessions"
+  );
+  const currentStartTime = new Date(sessionProps.session.start_time).toISOString();
+  const raceSlots = getQueueSlots(section, sessionProps)
+    .filter((slot) =>
+      canDirectRegisterSession(sessionProps)
+        ? new Date(slot.start_time).toISOString() !== currentStartTime
+        : true
+    )
+    .map((slot) => ({ sessionProps, slot, section }));
+  const qualifyEntries = collectSessionQueueEntries(isQualifySession, [nextRace?.button]);
+
+  syncTopQueueButtonList(
+    raceGroup.querySelector(".iref-top-queue-buttons"),
+    raceSlots,
+    ({ slot }) => `Queue ${slot.label}`
+  );
+  syncTopQueueButtonList(
+    qualifyGroup.querySelector(".iref-top-queue-buttons"),
+    qualifyEntries,
+    ({ slot }) => `Queue ${slot.label}`
+  );
+
+  raceGroup.classList.toggle("hidden", raceSlots.length < 1);
+  qualifyGroup.classList.toggle("hidden", qualifyEntries.length < 1);
+}
+
+function getSessionButtonEntries(section, options = {}) {
+  return getSessionActionEntries(section, {
+    visibleOnly: false,
+    skipButtons: options.skipButtons || [],
+    dedupe: options.dedupe !== false,
+    skipSelectors: [
+      ".iref-native-action-hidden",
+      "#iref-top-action-row",
+      "#iref-top-queue-row",
+      "#iref-ui-root",
+    ],
+  }).filter(({ button }) => !findCurrentlyRacingSection()?.contains(button));
+}
+
+function resolveRegisterableSessionProps(section, sessionProps) {
+  if (!sessionProps?.session) {
+    return null;
+  }
+
+  if (canDirectRegisterSession(sessionProps)) {
+    return sessionProps;
+  }
+
+  const availableSessionsSection = findAvailableSessionsSection();
+  const nextRaceButton = findNextRaceSection()
+    ? findNextRaceProps(findNextRaceSection())?.button
+    : null;
+
+  if (!availableSessionsSection) {
+    return sessionProps;
+  }
+
+  const targetSeasonId = toNumber(sessionProps.contentId ?? sessionProps.session.season_id);
+  const targetEventType = getSessionEventType(sessionProps.session);
+  const targetStartTime = new Date(sessionProps.session.start_time).toISOString();
+  const entries = getSessionButtonEntries(availableSessionsSection || document, {
+    skipButtons: [nextRaceButton],
+  })
+    .map(({ props }) => props)
+    .filter((props) => props?.session);
+  const exactMatch = entries.find((props) => {
+    const sameSeason =
+      targetSeasonId === null ||
+      Number(props.contentId ?? props.session?.season_id) === targetSeasonId;
+    const sameEvent =
+      targetEventType === null ||
+      String(getSessionEventType(props.session)) === String(targetEventType);
+
+    return (
+      sameSeason &&
+      sameEvent &&
+      props.session.session_id &&
+      new Date(props.session.start_time).toISOString() === targetStartTime
+    );
+  });
+
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  return (
+    entries.find((props) => {
+      const sameSeason =
+        targetSeasonId === null ||
+        Number(props.contentId ?? props.session?.season_id) === targetSeasonId;
+      const sameEvent =
+        targetEventType === null ||
+        String(getSessionEventType(props.session)) === String(targetEventType);
+
+      return sameSeason && sameEvent && props.session.session_id;
+    }) || sessionProps
+  );
+}
+
+function getDirectRegisterMode(section, sessionProps) {
+  const state = getRegistrationState();
+  const seasonId = sessionProps?.contentId ?? sessionProps?.session?.season_id ?? null;
+  const seasonName = sessionProps?.session?.season_name || "";
+  const nativeWithdraw = findNativeWithdrawAction();
+  const optimisticMode = section?.dataset?.irefRegistrationMode || "";
+
+  if (isCurrentPageWithdrawPending()) {
+    return {
+      mode: "register",
+      registrationState: null,
+    };
+  }
+
+  if (optimisticMode === "withdraw") {
+    return {
+      mode: "withdraw",
+      registrationState: state,
+    };
+  }
+
+  if (nativeWithdraw) {
+    return {
+      mode: "withdraw",
+      registrationState: state,
+    };
+  }
+
+  if (!hasActiveRegistration(state)) {
+    return {
+      mode: "register",
+      registrationState: null,
+    };
+  }
+
+  if (
+    registrationMatchesCurrentPage(state, sessionProps) ||
+    seasonsMatch(state, seasonId, seasonName)
+  ) {
+    return {
+      mode: "withdraw",
+      registrationState: state,
+    };
+  }
+
+  return {
+    mode: "elsewhere",
+    registrationState: state,
+  };
+}
+
+function findActionRowAnchor(viewButton) {
+  return findClosest(
+    viewButton,
+    (node) => node !== viewButton && typeof node.querySelector === "function" && !!node.querySelector("button")
+  );
+}
+
+function createTopActionRow() {
+  const row = document.createElement("div");
+  row.id = "iref-top-action-row";
+  row.className = "iref-top-action-row";
+
+  const primaryButton = document.createElement("button");
+  primaryButton.type = "button";
+  primaryButton.className = "iref-series-action-btn iref-series-action-primary";
+  primaryButton.dataset.irefRole = "primary";
+
+  const secondaryButton = document.createElement("button");
+  secondaryButton.type = "button";
+  secondaryButton.className = "iref-series-action-btn iref-series-action-secondary";
+  secondaryButton.dataset.irefRole = "secondary";
+
+  row.append(primaryButton, secondaryButton);
+  return row;
+}
+
+function getSeriesActionDescription(state) {
+  if (!state) {
+    return "Register for this session from the browser.";
+  }
+
+  if (state.status === "registering") {
+    return "A browser registration request is already in flight.";
+  }
+
+  return state.season_name
+    ? `You are already registered for ${state.season_name}.`
+    : "You are already registered in another series.";
+}
+
+function getSecondaryActionLabel(viewButton) {
+  const label = normalizeText(viewButton?.innerText || viewButton?.textContent || "");
+  return label || "View in iRacing";
+}
+
+function syncActionButtonState(button, mode, registrationState, isRegisterAvailable) {
+  button.classList.remove(
+    "is-register",
+    "is-withdraw",
+    "is-elsewhere",
+    "is-unavailable",
+    "is-registering"
+  );
+  button.disabled = false;
+  button.title = "";
+
+  if (mode === "withdraw") {
+    button.textContent = "Withdraw";
+    button.classList.add("is-withdraw");
+
+    if (registrationState?.status === "registering") {
+      button.classList.add("is-registering");
+    }
+
+    return;
+  }
+
+  if (mode === "elsewhere") {
+    button.textContent =
+      registrationState?.status === "registering"
+        ? "Registering elsewhere"
+        : "Registered elsewhere";
+    button.title = getSeriesActionDescription(registrationState);
+    button.classList.add("is-elsewhere");
+    button.disabled = true;
+    return;
+  }
+
+  if (!isRegisterAvailable) {
+    button.textContent = "Register unavailable";
+    button.classList.add("is-unavailable");
+    button.disabled = true;
+    return;
+  }
+
+  button.textContent = "Register";
+  button.title = "Register for this race from the browser.";
+  button.classList.add("is-register");
+}
+
+function buildRegistrationState(registerableProps, selectedCar, overrides = {}) {
+  const session = registerableProps?.session || {};
+  const seasonName = formatSeasonName(session.season_name || "");
+
+  return {
+    status: "registering",
+    source: "direct",
+    confirmed_by_site: false,
+    season_id: registerableProps.contentId ?? session.season_id ?? null,
+    season_name: seasonName,
+    car_id: selectedCar.car_id,
+    car_class_id: selectedCar.car_class_id,
+    car_name: selectedCar.car_name || null,
+    event_type: getSessionEventType(session) ?? raceEventType,
+    event_type_name: getSessionEventName(session),
+    session_id: session.session_id ?? null,
+    subsession_id: session.subsession_id ?? null,
+    start_time: session.start_time ? new Date(session.start_time).toISOString() : null,
+    start_label: session.start_time ? formatTimeLabel(session.start_time) : null,
+    track_name: session.track_name || session.track?.track_name || null,
+    source_path: location.pathname,
+    source_url: location.href,
+    registered_at: null,
+    requested_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function startRegistrationFlow(registrationState, labels = {}, handlers = {}, options = {}) {
+  const {
+    registerDelayMs = 300,
+    retryWithdrawBeforeRegister = false,
+    withdrawRetryDelayMs = queueWithdrawRetryDelayMs,
+  } = options;
+
+  if (!ws.isReady()) {
+    log("🚫 Cannot register yet because the iRacing websocket is offline");
+    window.alert("The iRacing websocket is not ready yet.");
+    return false;
+  }
+
+  const previousRegistrationState = getRegistrationState();
+  const shouldWithdrawCurrentSession =
+    retryWithdrawBeforeRegister ||
+    (hasActiveRegistration(previousRegistrationState) &&
+      !registrationTargetsMatch(previousRegistrationState, registrationState));
+  const effectiveRegisterDelayMs = shouldWithdrawCurrentSession
+    ? Math.max(registerDelayMs, withdrawRetryDelayMs + 2000)
+    : registerDelayMs;
+
+  setRegistrationState({
+    ...registrationState,
+    status: "registering",
+    confirmed_by_site: false,
+    registered_at: null,
+    requested_at: new Date().toISOString(),
+  });
+
+  if (shouldWithdrawCurrentSession) {
+    const withdrew = tryWithdrawCurrentSession({
+      preferNative: false,
+      autoConfirm: true,
+    });
+
+    if (!withdrew) {
+      clearRegistrationState();
+      handlers.onWithdrawFailed?.();
+      log(labels.withdrawError || "🚫 Could not send the withdraw request");
+      return false;
+    }
+  }
+
+  if (shouldWithdrawCurrentSession) {
+    window.setTimeout(() => {
+      const currentState = getRegistrationState();
+
+      if (!currentState || currentState.status !== "registering") {
+        return;
+      }
+
+      if (tryWithdrawCurrentSession({ preferNative: false, autoConfirm: true })) {
+        log(labels.withdrawRetry || "🔁 Retrying withdraw before register");
+      }
+    }, withdrawRetryDelayMs);
+  }
+
+  window.setTimeout(() => {
+    const currentState = getRegistrationState();
+
+    if (
+      currentState &&
+      currentState.status === "registering" &&
+      registrationTargetsMatch(currentState, registrationState)
+    ) {
+      armNativeConfirmation("register", { source: "ws-register" });
+    }
+
+    const registered = ws.register(
+      registrationState.season_name,
+      registrationState.car_id,
+      registrationState.car_class_id,
+      registrationState.session_id,
+      registrationState.subsession_id
+    );
+
+    if (!registered) {
+      clearRegistrationState();
+      handlers.onRegisterFailed?.();
+      log(labels.registerError || "🚫 Could not send the register request");
+      return;
+    }
+
+    setRegistrationState({
+      ...registrationState,
+      status: "registering",
+      confirmed_by_site: false,
+      registered_at: null,
+      register_requested_at: new Date().toISOString(),
+      requested_at: new Date().toISOString(),
+    });
+    log(labels.registered || `✅ Sent register request for ${registrationState.season_name}`);
+  }, effectiveRegisterDelayMs);
+
+  return true;
+}
+
+function sendDirectRegister(registerableProps, selectedCar) {
+  clearCurrentPageWithdrawPending();
+  if (!canDirectRegisterSession(registerableProps)) {
+    log("🚫 This page did not expose a registerable session id yet");
+    return false;
+  }
+
+  return startRegistrationFlow(
+    buildRegistrationState(registerableProps, selectedCar),
+    {
+      withdrawError: "🚫 Could not start the direct register flow",
+      registerError: "🚫 Could not finish the direct register flow",
+      registered: `✅ Sent direct register request for ${formatSeasonName(
+        registerableProps.session?.season_name || ""
+      )}`,
+    }
+  );
+}
+
+function setCurrentPageRegistrationMode(mode = "") {
+  const nextRaceSection = findNextRaceSection();
+
+  if (!nextRaceSection) {
+    return false;
+  }
+
+  if (mode) {
+    nextRaceSection.dataset.irefRegistrationMode = mode;
+  } else {
+    delete nextRaceSection.dataset.irefRegistrationMode;
+  }
+
+  return true;
+}
+
+function syncCurrentPageRegistrationUi() {
+  const nextRaceSection = findNextRaceSection();
+  const nextRace = nextRaceSection ? findNextRaceProps(nextRaceSection) : null;
+
+  if (!nextRaceSection || !nextRace) {
+    return false;
+  }
+
+  syncCurrentTimeOffset(nextRaceSection, nextRace.props);
+  ensureDirectRegisterButtons(nextRaceSection, nextRace.props);
+  ensureTopQueueButtons(nextRaceSection, nextRace.props);
+  return true;
+}
+
+function scheduleLocalWithdrawRefresh() {
+  window.setTimeout(() => {
+    ws.refreshNow();
+    syncCurrentPageRegistrationUi();
+  }, 250);
+  window.setTimeout(() => {
+    ws.refreshNow();
+    syncCurrentPageRegistrationUi();
+  }, 1200);
+  window.setTimeout(() => {
+    ws.refreshNow();
+    syncCurrentPageRegistrationUi();
+  }, 3500);
+}
+
+export function requestCurrentSessionWithdraw() {
+  const sent = tryWithdrawCurrentSession({
+    preferNative: false,
+    autoConfirm: true,
+  });
+
+  if (!sent) {
+    log("🚫 Could not send the withdraw request");
+    return false;
+  }
+
+  clearRegistrationState();
+  markCurrentPageWithdrawPending();
+  setCurrentPageRegistrationMode("register");
+  syncCurrentPageRegistrationUi();
+  scheduleLocalWithdrawRefresh();
+  log("✅ Sent withdraw request");
+  return true;
+}
+
+function sendDirectWithdraw() {
+  return requestCurrentSessionWithdraw();
+}
+
+function handleDirectWithdraw(button, section) {
+  if (!sendDirectWithdraw()) {
+    return;
+  }
+
+  section.dataset.irefRegistrationMode = "register";
+  syncActionButtonState(button, "register", null, true);
+}
+
+function handleDirectRegister(button, section, sessionProps, registerableProps) {
+  const currentMode = getDirectRegisterMode(section, sessionProps);
+
+  if (currentMode.mode === "withdraw") {
+    handleDirectWithdraw(button, section);
+    return;
+  }
+
+  if (currentMode.mode === "elsewhere") {
+    return;
+  }
+
+  const selectedCar = getSelectedCar(
+    registerableProps?.contentId ?? sessionProps?.contentId,
+    registerableProps || sessionProps,
+    section
+  );
+
+  if (!selectedCar) {
+    handleMissingCar(button, sessionProps?.contentId);
+    return;
+  }
+
+  const sent = sendDirectRegister(registerableProps || sessionProps, selectedCar);
+
+  if (!sent) {
+    return;
+  }
+
+  section.dataset.irefRegistrationMode = "withdraw";
+  syncActionButtonState(button, "withdraw", { status: "registering" }, true);
+}
+
+function handleTopQueueClick(button, section, sessionProps) {
+  const mirroredRaceQueueButton = section.querySelector(
+    '[data-iref-queue-group="race"] .iref-top-queue-buttons [data-iref-queue-key]'
+  );
+
+  if (mirroredRaceQueueButton && mirroredRaceQueueButton !== button) {
+    mirroredRaceQueueButton.click();
+    return;
+  }
+
+  handleQueueButtonAction(
+    button,
+    sessionProps,
+    {
+      label: "next race",
+      start_time: new Date(sessionProps.session.start_time).toISOString(),
+    },
+    section
+  );
+}
+
+function ensureDirectRegisterButtons(section, sessionProps) {
+  const nextRace = findNextRaceProps(section);
+  const viewButton = nextRace?.button;
+
+  if (!viewButton || !sessionProps?.session) {
+    return;
+  }
+
+  const anchorRow = findActionRowAnchor(viewButton);
+  if (anchorRow) {
+    anchorRow.classList.remove("iref-native-action-hidden");
+  }
+
+  restoreNativeTopActionRow(section);
+  section.dataset.irefRegistrationMode = getDirectRegisterMode(section, sessionProps).mode;
+}
+
+function ensureSessionRegisterButton(nativeButton, sessionProps, section) {
+  const container = nativeButton.parentElement;
+
+  if (!container || !sessionProps?.session?.session_id) {
+    return;
+  }
+
+  nativeButton.classList.remove("iref-session-view-hidden");
+  container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+    element.remove();
+  });
+}
+
+function ensureSessionQueueButtons(section, options = {}) {
+  const { skipNextRaceButton = false } = options;
+  const nextRaceSection = findNextRaceSection();
+  const nextRaceButton = nextRaceSection
+    ? findNextRaceProps(nextRaceSection)?.button
+    : null;
+  const practiceSessionsSection = findPracticeSessionsSection();
+
+  getSessionButtonEntries(section, {
+    skipButtons: nextRaceButton ? [nextRaceButton] : [],
+  }).forEach(({ button, props }) => {
+    if (skipNextRaceButton && button === nextRaceButton) {
+      return;
+    }
+
+    const container = button.parentElement;
+
+    if (!container) {
+      return;
+    }
+
+    const clearCustomQueueRow = () => {
+      button.classList.remove("iref-session-view-hidden");
+      container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+        element.remove();
+      });
+      container.querySelectorAll(".iref-session-queue-row").forEach((element) => {
+        element.remove();
+      });
+    };
+
+    if (practiceSessionsSection?.contains(button)) {
+      clearCustomQueueRow();
+      return;
+    }
+
+    if (
+      !props?.session ||
+      props.session.max_team_drivers > 1 ||
+      !isQueueableSession(props.session)
+    ) {
+      clearCustomQueueRow();
+      return;
+    }
+
+    const startTime = new Date(props.session.start_time).toISOString();
+    const eventType = getSessionEventType(props.session);
+    const queueSlotKey = makeQueueSlotKey(props.contentId, eventType, startTime);
+    const existingQueueRow = container.querySelector(
+      `#${CSS.escape(`iref-session-queue-row-${slugify(queueSlotKey)}`)}`
+    );
+
+    if (canDirectRegisterSession(props)) {
+      clearCustomQueueRow();
+      return;
+    }
+
+    button.classList.add("iref-session-view-hidden");
+    container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+      element.remove();
+    });
+
+    const queueRow = ensureSessionQueueRow(container, queueSlotKey);
+
+    if (!queueRow) {
+      return;
+    }
+
+    let queueButton = queueRow.querySelector(
+      `[data-iref-queue-key="${CSS.escape(queueSlotKey)}"]`
+    );
+
+    if (!queueButton) {
+      queueButton = createQueueButton(
+        `${slugify(String(props.contentId))}-${slugify(startTime)}-inline`,
+        "Queue"
+      );
+      queueButton.classList.add("iref-queue-btn-inline");
+      queueButton.dataset.irefIdleLabel = "Queue";
+      queueButton.dataset.irefQueueKey = queueSlotKey;
+      queueButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const currentQueueItem = getQueueItem(props.contentId, startTime, eventType);
+
+        if (currentQueueItem?.status === "found") {
+          activateQueueItem(
+            findQueueIndex(props.contentId, startTime, eventType),
+            { manual: true }
+          );
+          return;
+        }
+
+        if (currentQueueItem) {
+          removeQueueItem(currentQueueItem);
+          return;
+        }
+
+        queueSlot(
+          props,
+          {
+            label: formatTimeLabel(startTime),
+            start_time: startTime,
+          },
+          queueButton,
+          section
+        );
+      });
+      queueRow.appendChild(queueButton);
+    }
+  });
+}
+
+function ensurePracticeRegisterButtons(section) {
+  getSessionButtonEntries(section).forEach(({ button, props }) => {
+    const container = button.parentElement;
+
+    if (!container || !props?.session || props.session.max_team_drivers > 1) {
+      return;
+    }
+
+    button.classList.remove("iref-session-view-hidden");
+    container.querySelectorAll(".iref-session-register-btn").forEach((element) => {
+      element.remove();
+    });
+  });
+}
+
+function checkSession(session, queueItem) {
+  if (queueItem.status !== "queued") {
+    return;
+  }
+
+  const queuedStartTime =
+    new Date(queueItem.start_time).toISOString().split(".")[0] + "Z";
+
+  if (
+    Number(session.season_id) === Number(queueItem.season_id) &&
+    sessionMatchesQueueEvent(session, queueItem) &&
+    session.start_time === queuedStartTime &&
+    session.session_id > 0
+  ) {
+    log(
+      `📝 ${queueItem.event_type_name || getSessionEventName(session)} session for ${formatSeasonName(
+        queueItem.season_name
+      )} at ${queueItem.start_label} found`
+    );
+    queueItem.session_id = session.session_id;
+    queueItem.subsession_id = session.subsession_id ?? null;
+
+    if (!updateQueueReadiness(queueItem, session)) {
+      persistQueue();
+    }
+  }
+}
+
+function canAttemptRegistration(queueItem) {
+  if (!queueItem) {
+    return false;
+  }
+
+  if (
+    !queueItem.session_id ||
+    !queueItem.car_id ||
+    !queueItem.car_class_id
+  ) {
+    return false;
+  }
+
+  const startTime = new Date(queueItem.start_time).getTime();
+
+  if (Number.isNaN(startTime)) {
+    return false;
+  }
+
+  return startTime >= getCurrentTime() - autoRegisterGraceMs;
+}
+
+export function activateQueueItem(queueIndex, options = {}) {
+  const { manual = false, allowQueued = false } = options;
+  const queueItem = ensureWatchQueue()[queueIndex];
+  const canAutoActivateQueuedItem =
+    allowQueued &&
+    queueItem?.status === "queued" &&
+    !!queueItem.session_id &&
+    canQueueItemRegisterNow(queueItem);
+
+  if (!queueItem || (queueItem.status !== "found" && !canAutoActivateQueuedItem)) {
+    return;
+  }
+
+  if (!manual && !isInsideQueueRegisterWindow(queueItem.start_time)) {
+    return;
+  }
+
+  if (!canAttemptRegistration(queueItem)) {
+    log(`🚫 Queue item for ${queueItem.season_name} is no longer valid`);
+    removeQueueItem(queueItem);
+    return;
+  }
+
+  if (!ws.isReady()) {
+    log("🚫 Queue paused because the iRacing websocket is not ready");
+    return;
+  }
+
+  const registrationState = buildRegistrationStateFromQueueItem(queueItem);
+  const currentRegistrationState = getRegistrationState();
+
+  if (currentRegistrationState?.status === "registering") {
+    log("🚫 Queue paused because another registration request is in progress");
+    return;
+  }
+
+  if (
+    hasActiveRegistration(currentRegistrationState) &&
+    registrationTargetsMatch(currentRegistrationState, registrationState)
+  ) {
+    removeQueueItem(queueItem);
+    return;
+  }
+
+  const displacedRegistrationState = canRequeueDisplacedRegistration(
+    currentRegistrationState,
+    registrationState
+  )
+    ? { ...currentRegistrationState }
+    : null;
+
+  queueItem.status = "registering";
+  queueItem.last_attempt_at = new Date().toISOString();
+  persistQueue();
+
+  log(
+    `📝 Registering for ${formatSeasonName(
+      queueItem.season_name
+    )} at ${queueItem.start_label}`
+  );
+
+  const started = startRegistrationFlow(
+    {
+      ...registrationState,
+      displaced_registration: displacedRegistrationState,
+    },
+    {
+      withdrawError: "🚫 Could not send withdraw request",
+      withdrawRetry: "🔁 Retrying withdraw before the queued register",
+      registerError: "🚫 Could not send register request",
+      registered: `✅ Sent register request for ${queueItem.season_name} ${queueItem.start_label}`,
+    },
+    {
+      onWithdrawFailed: () => {
+        queueItem.status = "found";
+        persistQueue();
+      },
+      onRegisterFailed: () => {
+        queueItem.status = "found";
+        persistQueue();
+      },
+    },
+    {
+      retryWithdrawBeforeRegister: true,
+      withdrawRetryDelayMs: queueWithdrawRetryDelayMs,
+      registerDelayMs: queueRegisterDelayMs,
+    }
+  );
+
+  if (!started) {
+    return;
+  }
+}
+
+export function removeQueuedSession(queueItem) {
+  removeQueueItem(queueItem);
+}
+
+const wsCallback = (data) => {
+  syncRegistrationStateFromServer(data);
+
+  ensureWatchQueue().forEach((queueItem) => {
+    try {
+      data.data.delta.INSERT.forEach((session) => {
+        checkSession(session, queueItem);
+      });
+    } catch {}
+
+    try {
+      data.data.delta.REGISTRATION.forEach((session) => {
+        checkSession(session, queueItem);
+      });
+    } catch {}
+  });
+};
+
+if (!ws.callbacks.includes(wsCallback)) {
+  ws.callbacks.push(wsCallback);
+}
+
+window.setInterval(() => {
+  const queue = cleanupQueue();
+
+  if (queue.length !== ensureWatchQueue().length) {
+    setWatchQueue(queue);
+  }
+
+  ensureWatchQueue().forEach((queueItem, queueIndex) => {
+    if (queueItem.status === "queued" && queueItem.session_id) {
+      updateQueueReadiness(queueItem);
+    }
+
+    if (
+      queueItem.auto_register_armed !== false &&
+      queueItem.status === "found" &&
+      canQueueItemRegisterNow(queueItem) &&
+      isInsideQueueRegisterWindow(queueItem.start_time)
+    ) {
+      activateQueueItem(queueIndex, { manual: false });
+    }
+  });
+}, 1000);
+
+async function init(activate = true) {
+  clearInterval(persistInterval);
+
+  if (!activate) {
+    return;
+  }
+
+  loadQueue();
+  loadRegistrationState();
+  initSoundSupport();
+  installNativeActionInterceptors();
+
+  persistInterval = window.setInterval(() => {
+    tryAutoConfirmNativePrompt();
+    restoreNativeSessionActions(findCurrentlyRacingSection());
+
+    const nextRaceSection = findNextRaceSection();
+
+    if (nextRaceSection) {
+      const nextRace = findNextRaceProps(nextRaceSection);
+
+      if (nextRace) {
+        restoreNativeTopActionRow(nextRaceSection);
+        syncCurrentTimeOffset(nextRaceSection, nextRace.props);
+        ensureDirectRegisterButtons(nextRaceSection, nextRace.props);
+        ensureTopQueueButtons(nextRaceSection, nextRace.props);
+      }
+    }
+
+    const availableSessionsSection = findAvailableSessionsSection();
+
+    if (availableSessionsSection) {
+      ensureSessionQueueButtons(availableSessionsSection);
+    }
+
+    const practiceSessionsSection = findPracticeSessionsSection();
+
+    if (practiceSessionsSection) {
+      ensurePracticeRegisterButtons(practiceSessionsSection);
+    }
+
+    ensureSessionQueueButtons(document, { skipNextRaceButton: true });
+
+    syncQueueButtons();
+  }, 400);
+}
+
+features.add(id, true, selector, bodyClass, init);
