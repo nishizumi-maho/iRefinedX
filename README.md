@@ -104,14 +104,54 @@ Stable builds ignore newer prereleases by default. Once a newer stable release i
 - an in-app update button
 - an update note inside the settings panel
 
+## Note For iRacing Staff
+
+`iRefinedX` intentionally avoids the `remote debugging` / DevTools-port model.
+
+The runtime model used here is:
+
+- preserve the official local UI bundle as `app.irx-original.asar`
+- build the `iRefinedX` layer from that local official bundle
+- route launch mode locally between the untouched official runtime and the injected runtime
+- keep the official Electron preload, local service integration, register/withdraw flows and session handoff
+
+Why this is materially safer than relying on a DevTools port:
+
+- `iRefinedX` does not open a Chrome DevTools Protocol socket such as `--remote-debugging-port=9222`
+- it does not expose a general-purpose localhost control channel that another local process can attach to while the UI is running
+- it does not depend on a live external debugger session to inspect, mutate or drive the app
+- it does not ship a private update service, hidden downloader or remote command path
+
+From an attack-surface perspective, that is narrower than a design that keeps a DevTools/CDP endpoint open.
+
+The project still modifies local UI files, but it does so in a constrained and reversible way:
+
+- the official bundle is preserved locally and restored on uninstall
+- launching the normal `iRacing UI` shortcut uses the untouched official runtime
+- launching the `iRefinedX` shortcut uses the injected runtime
+- when the official UI updates, `iRefinedX` rebuilds its derived runtime from the new local official files
+
+Just as important, this project does not try to cross iRacing trust boundaries:
+
+- it does not bypass authentication or entitlement checks
+- it does not automate driving or inject simulator inputs
+- it does not replace the official local services with an alternate backend
+- it does not silently self-update or replace binaries in the background
+
+In short: this is a local runtime patching approach with no exposed DevTools socket, no remote debugger dependency and no extra network control plane beyond what the official UI already uses.
+
 ## Security And Privacy Summary
 
+- repository review on 2026-04-24 checked for obvious secrets, Electron debug switches, local listener/server code, updater behavior and local-data handling
 - `npm audit --omit=dev --prefix extension`: clean
 - `npm audit --omit=dev --prefix desktop`: clean
 - GitHub CodeQL and dependency audit automation are configured in repository workflows
 - tracked source was scanned for obvious secrets and credentials
+- no `remote-debugging-port` switch or DevTools-port bootstrap is configured in tracked source
+- no HTTP/WebSocket server is started by `iRefinedX` itself in tracked source
 - runtime logs, extracted app files, build output and local analysis folders are gitignored
 - queue state and settings are stored locally on the machine running the app
+- update checks go only to public GitHub Releases metadata and are notification-only
 - verbose network diagnostics are opt-in through `IREFINED_VERBOSE_NETWORK_LOGS=1`
 
 ## Repository Layout
