@@ -54,9 +54,30 @@ The wiki is the primary technical reference. It documents the runtime architectu
 
 - Open the normal `iRacing UI` shortcut when you want the untouched official UI.
 - Open the `iRefinedX` shortcut when you want the injected UI with `iRefinedX` features.
+- Use the purple `IREF` button in the bottom bar to open the `iRefinedX` menu at any time.
 - When iRacing updates the official UI, launch `iRefinedX` again and it will rebuild the injected layer automatically on top of the new official files.
 - To update `iRefinedX`, download the newer installer and run it over the existing install.
 - To uninstall `iRefinedX`, close `iRefinedX` and `iRacing UI` first. The uninstaller restores the official UI files before removing the app.
+
+## Bottom `IREF` Menu
+
+The purple `IREF` button in the lower bar opens the main `iRefinedX` settings panel.
+
+The current menu includes options for:
+
+- Test Drive session sharing buttons
+- Hosted/League session tools
+- hiding or showing the Go Racing JSON export buttons
+- enabling the future-session queue system
+- re-queueing displaced registrations
+- queue register sound, sound volume and a sound test button
+- showing session type on the join button
+- showing or hiding the Dashboard `Intelligence Center`
+- hiding notifications or auto-closing them after a delay
+- hiding sidebars or collapsing the left menu
+- showing local `iRefinedX` log messages
+
+The same menu also shows the in-app update note when a newer `iRefinedX` release is available.
 
 ## Local Build And Run
 
