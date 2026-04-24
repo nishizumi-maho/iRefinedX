@@ -1,6 +1,10 @@
 import { io } from "socket.io-client";
 import { log } from "../features/logger.js";
 
+const socketEnsureCooldownMs = 5000;
+const socketInitStallMs = 15000;
+const socketKeepAliveIntervalMs = 5000;
+
 function getSentryRelease() {
   return typeof SENTRY_RELEASE !== "undefined" ? SENTRY_RELEASE : null;
 }
@@ -16,6 +20,11 @@ let clientSocket;
 let authSocket;
 let initialized = false;
 let callbacks = [];
+let lastSocketActivityAt = 0;
+let lastSocketInitAt = 0;
+let lastSocketEnsureAt = 0;
+let keepAliveIntervalId = 0;
+let lifecycleHandlersBound = false;
 
 function updateDebugState(patch = {}) {
   if (typeof window === "undefined") {
@@ -42,6 +51,15 @@ function updateDebugState(patch = {}) {
   };
 }
 
+function markSocketActivity(lastEvent = "", patch = {}) {
+  lastSocketActivityAt = Date.now();
+  updateDebugState({
+    ...(lastEvent ? { lastEvent } : {}),
+    lastActivityAt: new Date(lastSocketActivityAt).toISOString(),
+    ...patch,
+  });
+}
+
 function id() {
   var t = function () {
     return Math.floor((1 + Math.random()) * 65536)
@@ -59,7 +77,46 @@ function formatSeasonName(seasonName) {
   return seasonName;
 }
 
-function initWS() {
+function disconnectSocket(socket) {
+  if (!socket) {
+    return;
+  }
+
+  try {
+    socket.removeAllListeners();
+  } catch {}
+
+  try {
+    socket.disconnect();
+  } catch {}
+}
+
+function clearSockets() {
+  disconnectSocket(authSocket);
+  disconnectSocket(clientSocket);
+  authSocket = undefined;
+  clientSocket = undefined;
+  initialized = false;
+}
+
+function createSocket(url, irVersion) {
+  return io(url, {
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 10000,
+    forceNew: true,
+    autoConnect: true,
+    auth: {
+      clientVersion: irVersion,
+    },
+    transports: ["websocket"],
+  });
+}
+
+function initWS(options = {}) {
+  const { force = false } = options;
   const release = getSentryRelease();
 
   if (!release?.id) {
@@ -69,102 +126,91 @@ function initWS() {
       ready: false,
     });
     log("🚫 Could not detect the iRacing client version for websocket auth");
-    return;
+    return false;
   }
+
+  if (!force && (authSocket || clientSocket)) {
+    return ensureReady({ reason: "init-existing", refresh: false });
+  }
+
+  clearSockets();
+  lastSocketInitAt = Date.now();
 
   const irVersion = release.id.substring(
     0,
     release.id.indexOf("-")
   );
 
-  authSocket = io("https://members-ng.iracing.com", {
-    reconnectionAttempts: 100,
-    auth: {
-      clientVersion: irVersion,
-    },
-    transports: ["websocket"],
-  });
-
-  clientSocket = io("https://members-ng.iracing.com/client.io", {
-    reconnectionAttempts: 100,
-    auth: {
-      clientVersion: irVersion,
-    },
-    transports: ["websocket"],
-  });
+  authSocket = createSocket("https://members-ng.iracing.com", irVersion);
+  clientSocket = createSocket("https://members-ng.iracing.com/client.io", irVersion);
 
   authSocket.on("connect", () => {
     initialized = false;
-    updateDebugState({
+    markSocketActivity("auth-connect", {
       releaseId: release.id,
       authConnected: true,
       initialized: false,
       ready: false,
       lastError: "",
-      lastEvent: "auth-connect",
     });
     log("⚡ Connected to iRacing");
   });
 
-  authSocket.on("disconnect", () => {
-    updateDebugState({
+  authSocket.on("disconnect", (reason) => {
+    markSocketActivity("auth-disconnect", {
       authConnected: false,
       ready: false,
-      lastEvent: "auth-disconnect",
+      lastError: reason || "",
     });
     log("⛓️‍💥 Disconnected from iRacing");
   });
 
   authSocket.on("connect_error", (error) => {
-    updateDebugState({
+    markSocketActivity("auth-connect-error", {
       authConnected: false,
       ready: false,
       lastError: error.message,
-      lastEvent: "auth-connect-error",
     });
     log(`🚫 iRacing auth socket error: ${error.message}`);
   });
 
   clientSocket.on("connect", () => {
-    updateDebugState({
+    markSocketActivity("client-connect", {
       clientConnected: true,
       ready: initialized,
       lastError: "",
-      lastEvent: "client-connect",
     });
     log("🔌 Connected to client.io");
   });
 
-  clientSocket.on("disconnect", () => {
+  clientSocket.on("disconnect", (reason) => {
     initialized = false;
-    updateDebugState({
+    markSocketActivity("client-disconnect", {
       clientConnected: false,
       initialized: false,
       ready: false,
-      lastEvent: "client-disconnect",
+      lastError: reason || "",
     });
     log("🔌 Disconnected from client.io");
   });
 
   clientSocket.on("connect_error", (error) => {
     initialized = false;
-    updateDebugState({
+    markSocketActivity("client-connect-error", {
       clientConnected: false,
       initialized: false,
       ready: false,
       lastError: error.message,
-      lastEvent: "client-connect-error",
     });
     log(`🚫 client.io socket error: ${error.message}`);
   });
 
   clientSocket.on("initialized", (data) => {
     initialized = true;
-    updateDebugState({
+    markSocketActivity("initialized", {
       initialized: true,
       ready: true,
       lastError: "",
-      lastEvent: "initialized",
       initializedAt: new Date().toISOString(),
     });
     authSocket.emit("now");
@@ -182,10 +228,21 @@ function initWS() {
   });
 
   authSocket.on("heartbeat", (data) => {
+    markSocketActivity("heartbeat", {
+      authConnected: true,
+      ready: initialized && !!clientSocket?.connected,
+      lastError: "",
+    });
     return data();
   });
 
   clientSocket.on("data_services_push", (data) => {
+    markSocketActivity("data-services-push", {
+      clientConnected: true,
+      initialized: initialized,
+      ready: initialized,
+      lastError: "",
+    });
     callbacks.forEach((callback) => {
       callback(data);
     });
@@ -201,6 +258,117 @@ function initWS() {
       } catch {}
     }
   });
+
+  ensureLifecycleHandlers();
+  ensureKeepAliveInterval();
+  return true;
+}
+
+function ensureLifecycleHandlers() {
+  if (lifecycleHandlersBound || typeof window === "undefined") {
+    return;
+  }
+
+  lifecycleHandlersBound = true;
+
+  window.addEventListener("focus", () => {
+    ensureReady({ reason: "window-focus" });
+  });
+
+  window.addEventListener("online", () => {
+    ensureReady({ reason: "browser-online" });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    ensureReady({
+      reason: document.hidden ? "document-hidden" : "document-visible",
+      refresh: true,
+    });
+  });
+}
+
+function ensureKeepAliveInterval() {
+  if (keepAliveIntervalId || typeof window === "undefined") {
+    return;
+  }
+
+  keepAliveIntervalId = window.setInterval(() => {
+    if (isReady()) {
+      refreshNow();
+      return;
+    }
+
+    ensureReady({ reason: "keepalive", refresh: false });
+  }, socketKeepAliveIntervalMs);
+}
+
+function ensureReady(options = {}) {
+  const { reason = "", refresh = true } = options;
+  const release = getSentryRelease();
+
+  if (!release?.id) {
+    updateDebugState({
+      releaseId: "",
+      lastError: "release-unavailable",
+      ready: false,
+      lastEvent: "ensure-release-unavailable",
+    });
+    return false;
+  }
+
+  if (!authSocket || !clientSocket) {
+    initWS({ force: true });
+    return false;
+  }
+
+  if (isReady()) {
+    if (refresh) {
+      refreshNow();
+    }
+    return true;
+  }
+
+  const now = Date.now();
+  const initStalled =
+    !!lastSocketInitAt &&
+    now - lastSocketInitAt >= socketInitStallMs &&
+    !!authSocket.connected &&
+    !!clientSocket.connected &&
+    !initialized;
+  const disconnectedAndStale =
+    !!lastSocketActivityAt &&
+    now - lastSocketActivityAt >= socketInitStallMs &&
+    !authSocket.connected &&
+    !clientSocket.connected;
+
+  if (!authSocket.connected && typeof authSocket.connect === "function") {
+    try {
+      authSocket.connect();
+    } catch {}
+  }
+
+  if (!clientSocket.connected && typeof clientSocket.connect === "function") {
+    try {
+      clientSocket.connect();
+    } catch {}
+  }
+
+  if (refresh && authSocket.connected) {
+    refreshNow();
+  }
+
+  if (
+    (initStalled || disconnectedAndStale) &&
+    now - lastSocketEnsureAt >= socketEnsureCooldownMs
+  ) {
+    lastSocketEnsureAt = now;
+    log(
+      `🔁 Restarting iRacing websocket connection${reason ? ` (${reason})` : ""}`
+    );
+    initWS({ force: true });
+  }
+
+  return isReady();
 }
 
 function send(event, data) {
@@ -238,9 +406,14 @@ function send(event, data) {
 
 function refreshNow() {
   if (!authSocket || !authSocket.connected) {
+    ensureReady({ reason: "refresh-now", refresh: false });
     return false;
   }
 
+  markSocketActivity("refresh-now", {
+    authConnected: true,
+    ready: initialized && !!clientSocket?.connected,
+  });
   authSocket.emit("now");
   return true;
 }
@@ -305,6 +478,7 @@ function isReady() {
 
 const ws = {
   send,
+  ensureReady,
   refreshNow,
   register,
   withdraw,
