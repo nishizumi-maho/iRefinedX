@@ -1,9 +1,9 @@
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+#define AppVersion "1.1.0"
 #endif
 
 #ifndef AppDisplayVersion
-  #define AppDisplayVersion AppVersion
+#define AppDisplayVersion "v1.1"
 #endif
 
 #ifndef AppPublisher

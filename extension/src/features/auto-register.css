@@ -147,7 +147,9 @@
 }
 
 .iref-top-primary-queue {
-  flex: 1 1 100%;
+  grid-column: 1 / -1;
+  width: 100%;
+  margin-bottom: 2px;
 }
 
 .iref-top-queue-row {
