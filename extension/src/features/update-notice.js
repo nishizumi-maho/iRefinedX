@@ -54,7 +54,7 @@ function ensureUpdatePopup() {
       >
         ×
       </button>
-      <div class="iref-update-popup-label">iRefinedX update available</div>
+      <div class="iref-update-popup-label">iReX update available</div>
       <h3 id="iref-update-popup-title" class="iref-update-popup-title"></h3>
       <p id="iref-update-popup-description" class="iref-update-popup-description"></p>
       <div class="iref-update-popup-versions">

@@ -24,7 +24,7 @@ const uiRootEl = (
         <button
           type="button"
           className="iref-logo iref-settings-trigger iref-settings-trigger-compact"
-          aria-label="Open iRefined options"
+          aria-label="Open iReX options"
           tabindex="0"
         >
           <img src={logo} />

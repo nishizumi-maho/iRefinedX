@@ -1,99 +1,100 @@
 # iRefinedX
 
-`iRefinedX` is a Windows desktop launcher that reuses the installed local iRacing UI and injects the `iRefinedX` enhancement layer into the official runtime.
+`iRefinedX` is a separate Windows launcher for the local iRacing UI.
 
-It is not a fake clone of the iRacing UI. It boots the real local Electron app, keeps the native preload, local service, viewer integration and session handoff, then layers the `iRefinedX` features on top.
+Inside the UI, the short name is `iReX`. The full app name, installer name, release name, and repository name stay `iRefinedX`.
+
+## Download and install
+
+1. Open the Releases page:
+   - [https://github.com/nishizumi-maho/iRefinedX/releases](https://github.com/nishizumi-maho/iRefinedX/releases)
+2. Download the latest Windows installer:
+   - `iRefinedX-Setup-1.0.0-x64.exe`
+3. Run the installer.
+4. Choose the Windows options you want:
+   - `Create a desktop shortcut`
+   - `Start iRefinedX when Windows starts`
+5. Finish the install and open `iRefinedX`.
+
+## What happens on first launch
+
+`iRefinedX` tries to find your official local `iRacingUI.exe` automatically.
+
+If it cannot find the install, or if it finds more than one valid iRacing installation, it opens a folder picker. You can then:
+
+- choose the iRacing root folder or the `ui` folder directly
+- tell `iRefinedX` to remember that choice
+- or use that folder only for the current launch
+
+The saved choice is local to your PC and is removed when `iRefinedX` is uninstalled.
+
+## Official UI vs iRefinedX
+
+- Use the normal iRacing shortcut to open the official local UI.
+- Use the `iRefinedX` shortcut to open the modified UI with the iReX layer.
+
+`iRefinedX` now works from a fresh managed copy of the current official local UI every time it starts. That means:
+
+- the official iRacing UI files stay available for the official shortcut
+- if iRacing updates its local UI, the next `iRefinedX` launch rebuilds its working copy from the new official version
+- uninstalling `iRefinedX` removes its own saved state and managed runtime copy
+
+## What iRefinedX adds
+
+- the real local iRacing UI, not a fake clone
+- native iRacing register, withdraw, launch, viewer, and local-service behavior
+- iReX queue tools for future sessions
+- lower queue/status bar persistence across restarts
+- the full-width `Intelligence Center`
+- session JSON export helpers where supported
+- a visible update popup when a newer GitHub Release exists
+
+## Updating
+
+`iRefinedX` checks GitHub Releases and shows a popup when a newer version is available.
+
+It does not silently self-update. To update:
+
+1. download the newer installer from Releases
+2. run it on top of the existing install
+3. reopen `iRefinedX`
+
+The installer is configured to update the existing installation in place instead of treating that as a full uninstall.
+
+## Uninstall
+
+Removing `iRefinedX` cleans up:
+
+- its desktop shortcut and Windows auto-start entry
+- its saved iRacing UI path choice
+- its managed runtime copy
+- its local app data used by the launcher
+
+## Privacy and security
+
+- no extra analytics or telemetry are added by `iRefinedX`
+- queue state and app settings stay on the local machine
+- update checks only talk to GitHub Releases for this repository
+- tracked source was checked for obvious secrets and credentials
+- `npm audit --omit=dev --prefix extension`: clean
+- `npm audit --omit=dev --prefix desktop`: clean
+- CodeQL and Dependabot are configured for the repository
 
 ## Documentation
 
-- Wiki: [github.com/nishizumi-maho/iRefinedX/wiki](https://github.com/nishizumi-maho/iRefinedX/wiki)
-- Research/reference docs: [docs/research](docs/research)
-- Releases: [github.com/nishizumi-maho/iRefinedX/releases](https://github.com/nishizumi-maho/iRefinedX/releases)
+- Releases: [https://github.com/nishizumi-maho/iRefinedX/releases](https://github.com/nishizumi-maho/iRefinedX/releases)
+- Wiki: [https://github.com/nishizumi-maho/iRefinedX/wiki](https://github.com/nishizumi-maho/iRefinedX/wiki)
+- Research docs: [docs/research](docs/research)
 - Third-party notices: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+- Security policy: [SECURITY.md](SECURITY.md)
 
-The wiki is the primary technical reference. It documents the runtime architecture, feature behavior, storage model, privacy boundaries, troubleshooting and release flow in detail.
+## From source
 
-## What It Does
+1. `npm --prefix extension install`
+2. `npm --prefix extension run build`
+3. `npm --prefix desktop install`
+4. `npm --prefix desktop start`
 
-- boots the official local iRacing UI instead of replacing it
-- keeps native register, withdraw, launch and viewer behavior
-- adds queue tools for future sessions while preserving native register buttons for open sessions
-- keeps the lower queue/status bar visible across app restarts
-- adds the full-width `Intelligence Center` dashboard widget
-- provides session JSON sharing and export helpers where the local UI supports them
-- checks GitHub Releases and warns the user when a newer `iRefinedX` version exists
-
-## What It Does Not Do
-
-- it does not replace the installed iRacing binaries with a custom client
-- it does not bypass iRacing authentication
-- it does not automate driving inputs
-- it does not keep queue automation alive while the app is closed
-- it does not ship the iRacing UI itself inside this repository
-
-## Requirements
-
-- Windows
-- local iRacing installation with the official `iRacingUI.exe`
-- Node.js for source-based local builds
-- an authenticated iRacing account
-
-## Local Build And Run
-
-1. Build the enhancement layer:
-   - `npm --prefix extension install`
-   - `npm --prefix extension run build`
-2. Install launcher dependencies:
-   - `npm --prefix desktop install`
-3. Start `iRefinedX`:
-   - `npm --prefix desktop start`
-
-The launcher patches the extracted local iRacing UI runtime in place, then starts the official `iRacingUI.exe`.
-
-## Installer Model
-
-The Windows installer ships `iRefinedX` as its own app and shortcut. It does not overwrite the official iRacing shortcut or replace the official installation entry point.
-
-On install, the user can choose:
-
-- create a desktop shortcut
-- start `iRefinedX` automatically with Windows
-
-On first launch, `iRefinedX` tries to find the official iRacing UI automatically by checking:
-
-- the saved `iRefinedX` UI path cache
-- the `iracing://` protocol association in the Windows registry
-- common default install paths such as `C:\Program Files (x86)\iRacing\ui` and `D:\Program Files (x86)\iRacing\ui`
-
-If none of those match, the app opens a folder picker so the user can point `iRefinedX` at the installed iRacing directory once, then reuses that location on later launches.
-
-## Update Model
-
-`iRefinedX` checks [GitHub Releases](https://github.com/nishizumi-maho/iRefinedX/releases) and shows a visible popup when a newer version is available.
-
-The updater only notifies. It does not silently self-update. The intended release artifact is a downloadable `iRefinedX` package or installer published on GitHub Releases.
-
-## Security And Privacy Summary
-
-- `npm audit --omit=dev --prefix extension`: clean
-- `npm audit --omit=dev --prefix desktop`: clean
-- tracked source was scanned for obvious secrets and credentials
-- runtime logs, extracted app files, build output and local analysis folders are gitignored
-- queue state and settings are stored locally on the machine running the app
-
-## Repository Layout
-
-- [`desktop/`](desktop): launcher, runtime patching and desktop-specific instrumentation
-- [`extension/`](extension): browser extension source and build config
-- [`docs/wiki/`](docs/wiki): source for the GitHub wiki
-- [`docs/research/`](docs/research): deeper analysis/reference material
-- [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md): third-party notices kept with the MIT-licensed source tree
-
-## Support and Issues
-
-- Use GitHub Issues for bug reports and feature requests.
-- Include the `iRefinedX` version, the iRacing UI version, the affected page and a screenshot when the issue is UI-related.
-
-## License and Affiliation
+## License and affiliation
 
 This repository is MIT licensed. `iRefinedX` is not affiliated with iRacing.

@@ -1,10 +1,12 @@
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
+!include "FileFunc.nsh"
 
 !define AUTO_START_REG_PATH "Software\Microsoft\Windows\CurrentVersion\Run"
 !define AUTO_START_REG_NAME "iRefinedX"
 !define DESKTOP_SHORTCUT_NAME "iRefinedX.lnk"
 !define APP_EXECUTABLE_NAME "iRefinedX.exe"
+!define CLEANUP_COMMAND_LINE "--cleanup-installed-state"
 
 Var DialogHandle
 Var DesktopShortcutCheckbox
@@ -68,4 +70,10 @@ FunctionEnd
 !macro customUnInstall
   DeleteRegValue HKCU "${AUTO_START_REG_PATH}" "${AUTO_START_REG_NAME}"
   Delete "$DESKTOP\${DESKTOP_SHORTCUT_NAME}"
+
+  ${IfNot} ${isUpdated}
+    ${If} ${FileExists} "$INSTDIR\${APP_EXECUTABLE_NAME}"
+      ExecWait '"$INSTDIR\${APP_EXECUTABLE_NAME}" ${CLEANUP_COMMAND_LINE}'
+    ${EndIf}
+  ${EndIf}
 !macroend

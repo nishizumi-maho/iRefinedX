@@ -8,21 +8,27 @@ const {
   normalizeUiDirCandidate,
   isValidOfficialUiDir,
   savePreferredUiDir,
+  restoreKnownOfficialUiDirs,
+  cleanupLocalState,
 } = require("./prepare-runtime.cjs");
 
-const APP_DATA_DIR = process.versions.electron
+const CLEANUP_FLAG = "--cleanup-installed-state";
+const IS_CLEANUP_MODE = process.argv.includes(CLEANUP_FLAG);
+const PERSISTENT_APP_DATA_DIR = process.versions.electron
   ? path.join(
       process.env.APPDATA || process.env.LOCALAPPDATA || os.tmpdir(),
       "iRefinedX"
     )
   : __dirname;
+const RUNLOG_DIR = IS_CLEANUP_MODE
+  ? path.join(os.tmpdir(), "iRefinedX-cleanup")
+  : path.join(PERSISTENT_APP_DATA_DIR, "runlogs");
 const SYSTEM32_DIR = path.join(
   process.env.SystemRoot || "C:\\Windows",
   "System32"
 );
 const TASKKILL_EXE = path.join(SYSTEM32_DIR, "taskkill.exe");
 const REG_EXE = path.join(SYSTEM32_DIR, "reg.exe");
-const RUNLOG_DIR = path.join(APP_DATA_DIR, "runlogs");
 const STDOUT_LOG = path.join(RUNLOG_DIR, "stdout-local-runtime.log");
 const STDERR_LOG = path.join(RUNLOG_DIR, "stderr-local-runtime.log");
 const IREF_MODE = process.env.IREF_MODE || "fallback";
@@ -51,6 +57,15 @@ function stopExistingIRacingUiInstances() {
   );
 
   return result.status === 0;
+}
+
+function restoreOfficialRuntimeState(reason) {
+  const restoreResult = restoreKnownOfficialUiDirs();
+  writeLauncherLog("official-runtime-restore-complete", {
+    reason,
+    ...restoreResult,
+  });
+  return restoreResult;
 }
 
 function restoreProtocolAssociation(exePath) {
@@ -84,7 +99,47 @@ function restoreProtocolAssociation(exePath) {
   });
 }
 
-async function promptForOfficialUiDir() {
+function formatUiCandidateList(candidates = []) {
+  return candidates.map((candidate) => `- ${candidate}`).join("\n");
+}
+
+function getPickerDefaultPath(candidates = []) {
+  const candidate = candidates.find(Boolean);
+
+  if (!candidate) {
+    return process.env["ProgramFiles(x86)"] || process.env.ProgramFiles || "C:\\";
+  }
+
+  return path.dirname(candidate);
+}
+
+async function promptToRememberOfficialUiDir(dialog, normalizedUiDir) {
+  const result = await dialog.showMessageBox({
+    type: "question",
+    buttons: ["Remember this folder", "Use once", "Cancel"],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+    title: "Remember this iRacing UI folder?",
+    message: "Do you want iReX to remember this iRacing UI folder?",
+    detail:
+      `${normalizedUiDir}\n\n` +
+      'Choose "Remember this folder" to reuse it on future launches, or "Use once" to launch only for this run.',
+  });
+
+  if (result.response === 0) {
+    savePreferredUiDir(normalizedUiDir);
+    return true;
+  }
+
+  if (result.response === 1) {
+    return true;
+  }
+
+  return false;
+}
+
+async function promptForOfficialUiDir(error = null) {
   if (!process.versions.electron) {
     return "";
   }
@@ -96,12 +151,32 @@ async function promptForOfficialUiDir() {
     return "";
   }
 
+  if (error?.code === "IRACING_UI_AMBIGUOUS") {
+    const choice = await dialog.showMessageBox({
+      type: "warning",
+      buttons: ["Choose folder", "Cancel"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+      title: "Choose your iRacing UI folder",
+      message: "More than one official iRacing installation was detected.",
+      detail:
+        `${formatUiCandidateList(error.candidates || [])}\n\n` +
+        "Select the iRacing root folder or the ui folder you want iReX to use.",
+    });
+
+    if (choice.response !== 0) {
+      return "";
+    }
+  }
+
   const result = await dialog.showOpenDialog({
     title: "Locate your official iRacing UI folder",
     buttonLabel: "Use this folder",
     properties: ["openDirectory"],
     message:
       "Select the installed iRacing UI folder. You can choose the iRacing root folder or the ui folder itself.",
+    defaultPath: getPickerDefaultPath(error?.candidates || []),
   });
 
   if (result.canceled || !result.filePaths?.[0]) {
@@ -116,15 +191,37 @@ async function promptForOfficialUiDir() {
     );
   }
 
-  savePreferredUiDir(normalizedUiDir);
+  const accepted = await promptToRememberOfficialUiDir(dialog, normalizedUiDir);
+
+  if (!accepted) {
+    return "";
+  }
+
   process.env.IRACING_UI_DIR = normalizedUiDir;
   return normalizedUiDir;
+}
+
+async function runCleanupMode() {
+  writeLauncherLog("cleanup-mode-start");
+  const stoppedExisting = stopExistingIRacingUiInstances();
+  writeLauncherLog("cleanup-existing-runtime-stop-attempted", {
+    stoppedExisting,
+  });
+
+  restoreOfficialRuntimeState("cleanup");
+  const cleanupResult = cleanupLocalState();
+  writeLauncherLog("cleanup-local-state-complete", cleanupResult);
 }
 
 async function main() {
   ensureDir(RUNLOG_DIR);
   fs.writeFileSync(STDOUT_LOG, "", "utf8");
   fs.writeFileSync(STDERR_LOG, "", "utf8");
+
+  if (IS_CLEANUP_MODE) {
+    await runCleanupMode();
+    return;
+  }
 
   writeLauncherLog("prepare-runtime-start", {
     irefMode: IREF_MODE,
@@ -134,22 +231,25 @@ async function main() {
   writeLauncherLog("existing-runtime-stop-attempted", {
     stoppedExisting,
   });
+  restoreOfficialRuntimeState("launcher-start");
 
   let runtime;
 
   try {
     runtime = await prepareRuntime();
   } catch (error) {
-    if (error?.code !== "IRACING_UI_NOT_FOUND") {
+    if (!["IRACING_UI_NOT_FOUND", "IRACING_UI_AMBIGUOUS"].includes(error?.code)) {
       throw error;
     }
 
     writeLauncherLog("iracing-ui-auto-discovery-failed", {
+      code: error.code || "",
       message: error.message,
       cacheFile: error.cacheFile || "",
+      candidates: error.candidates || [],
     });
 
-    const selectedUiDir = await promptForOfficialUiDir();
+    const selectedUiDir = await promptForOfficialUiDir(error);
 
     if (!selectedUiDir) {
       throw error;
@@ -192,6 +292,8 @@ async function main() {
       code,
       signal,
     });
+    restoreOfficialRuntimeState("runtime-exit");
+    restoreProtocolAssociation(runtime.officialExePath || runtime.exePath);
 
     process.exitCode = typeof code === "number" ? code : 0;
     setTimeout(() => {
@@ -200,6 +302,8 @@ async function main() {
   });
 
   child.on("error", (error) => {
+    restoreOfficialRuntimeState("runtime-spawn-error");
+    restoreProtocolAssociation(runtime.officialExePath || runtime.exePath);
     const line = `[${new Date().toISOString()}] runtime-error ${error.stack || error.message}\n`;
     fs.appendFileSync(STDERR_LOG, line, "utf8");
     process.stderr.write(line);
@@ -208,6 +312,7 @@ async function main() {
 
 main().catch((error) => {
   ensureDir(RUNLOG_DIR);
+  restoreOfficialRuntimeState("launcher-error");
   const line = `[${new Date().toISOString()}] launcher-failed ${error.stack || error.message}\n`;
   fs.appendFileSync(STDERR_LOG, line, "utf8");
   process.stderr.write(line);

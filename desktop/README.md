@@ -29,7 +29,9 @@ The packaged `iRefinedX` app auto-discovers the official local iRacing UI by che
 - the Windows protocol association for `iracing://`
 - common default install locations
 
-If auto-discovery fails, it opens a folder picker and accepts either the iRacing root folder or the `ui` folder directly. The chosen path is then cached under `%APPDATA%\iRefinedX\config\iracing-ui-dir.json`.
+If auto-discovery fails, or if more than one valid iRacing install is found, it opens a folder picker and accepts either the iRacing root folder or the `ui` folder directly. The user can then choose whether that folder should be remembered or used only for the current launch.
+
+On every launch, `iRefinedX` rebuilds a managed runtime copy from the currently installed official local UI. That keeps the official shortcut usable outside `iRefinedX` and lets the launcher pick up upstream iRacing UI updates on the next start.
 
 The NSIS installer is configured to show two English install options:
 
