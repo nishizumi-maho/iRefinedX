@@ -1,4 +1,5 @@
-# iRefinedX
+# This project was taken down by iRacing
+
 
 ![iRefinedX icon](docs/wiki/assets/icon-circle.png)
 
