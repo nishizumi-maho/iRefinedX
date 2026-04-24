@@ -2,7 +2,7 @@
 
 ![iRefinedX icon](docs/wiki/assets/icon-circle.png)
 
-`iRefinedX` is a Windows desktop launcher that reuses the installed local iRacing UI and injects the `iRefinedX` enhancement layer into the official runtime.
+`iRefinedX` is a Windows desktop app that reuses the installed local iRacing UI and injects the `iRefinedX` enhancement layer into the official runtime.
 
 It is not a fake clone of the iRacing UI. It boots the real local Electron app, keeps the native preload, local service, viewer integration and session handoff, then layers the `iRefinedX` features on top.
 
