@@ -99,6 +99,19 @@ function restoreProtocolAssociation(exePath) {
   });
 }
 
+function buildRuntimePathEnv(runtime) {
+  const pathEntries = [
+    runtime.runtimeDir || "",
+    path.join(runtime.runtimeDir || "", "swiftshader"),
+    runtime.officialUiDir || "",
+    path.join(runtime.officialUiDir || "", "swiftshader"),
+    runtime.officialInstallRoot || "",
+    process.env.PATH || "",
+  ].filter(Boolean);
+
+  return [...new Set(pathEntries)].join(path.delimiter);
+}
+
 function formatUiCandidateList(candidates = []) {
   return candidates.map((candidate) => `- ${candidate}`).join("\n");
 }
@@ -265,10 +278,12 @@ async function main() {
   });
 
   const child = spawn(runtime.exePath, process.argv.slice(2), {
-    cwd: runtime.runtimeDir || LOCAL_RUNTIME_DIR,
+    cwd: runtime.officialUiDir || runtime.runtimeDir || LOCAL_RUNTIME_DIR,
     env: {
       ...process.env,
       IREF_MODE,
+      IRACING_UI_DIR: runtime.officialUiDir || process.env.IRACING_UI_DIR || "",
+      PATH: buildRuntimePathEnv(runtime),
     },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: false,

@@ -47,6 +47,7 @@ const TITLEBAR_THEME_UPDATE_PATCHED = "Ha.setTitleBarOverlay(!1)";
 const LEGACY_PRELOAD_PATCH_SNIPPET = 'require("./irefined-preload.cjs");\n';
 const PRELOAD_PATCH_MARKER = "__irefinedPreloadProbe";
 const MANAGED_RUNTIME_DIR_PREFIX = "ui-irex-runtime";
+const MANAGED_RUNTIME_LAYOUT_VERSION = 1;
 const PRELOAD_WINDOW_INTEROP_ORIGINAL =
   'log:function(n){return e.ipcRenderer.invoke("log",{line:n})},openInBrowser:function(n){return e.ipcRenderer.invoke("openInBrowser",{link:n})},quit:function(){';
 const PRELOAD_WINDOW_INTEROP_PATCHED =
@@ -182,6 +183,7 @@ function getOfficialUiPaths(uiDir) {
     appDir: path.join(normalizedUiDir, "resources", "app"),
     mainJsPath: path.join(normalizedUiDir, "resources", "app", "compiled", "main.js"),
     preloadJsPath: path.join(normalizedUiDir, "resources", "app", "compiled", "preload.js"),
+    metadataPath: path.join(normalizedUiDir, ".irex-runtime.json"),
   };
 }
 
@@ -576,12 +578,82 @@ function restoreKnownOfficialUiDirs() {
 
 function getManagedRuntimeUiDir(uiDir) {
   const officialPaths = getOfficialUiPaths(uiDir);
-  const launchId = `${Date.now()}-${process.pid}`;
+  return path.join(officialPaths.installRoot, MANAGED_RUNTIME_DIR_PREFIX);
+}
 
-  return path.join(
-    officialPaths.installRoot,
-    `${MANAGED_RUNTIME_DIR_PREFIX}-${launchId}`
+function getManagedRuntimeFingerprint(officialPaths) {
+  const asarStats = statPath(officialPaths.asarPath);
+  const exeStats = statPath(officialPaths.exePath);
+
+  return [
+    `asar:${asarStats.size}:${Math.round(asarStats.mtimeMs)}`,
+    `exe:${exeStats.size}:${Math.round(exeStats.mtimeMs)}`,
+  ].join("|");
+}
+
+function readManagedRuntimeMetadata(runtimePaths) {
+  const metadata = readJsonFile(runtimePaths.metadataPath, null);
+
+  if (!metadata || typeof metadata !== "object") {
+    return null;
+  }
+
+  return metadata;
+}
+
+function writeManagedRuntimeMetadata(runtimePaths, metadata) {
+  fs.writeFileSync(runtimePaths.metadataPath, JSON.stringify(metadata, null, 2), "utf8");
+}
+
+function isManagedRuntimeReusable(runtimePaths, expectedFingerprint) {
+  const metadata = readManagedRuntimeMetadata(runtimePaths);
+
+  if (!metadata) {
+    return false;
+  }
+
+  if (metadata.layoutVersion !== MANAGED_RUNTIME_LAYOUT_VERSION) {
+    return false;
+  }
+
+  if (metadata.sourceFingerprint !== expectedFingerprint) {
+    return false;
+  }
+
+  return (
+    pathExists(runtimePaths.exePath) &&
+    pathExists(runtimePaths.backupAsarPath) &&
+    pathExists(runtimePaths.appDir) &&
+    pathExists(runtimePaths.mainJsPath) &&
+    pathExists(runtimePaths.preloadJsPath)
   );
+}
+
+function cleanupSiblingManagedRuntimeDirs(installRoot, keepDir = "") {
+  const keepPath = keepDir ? path.normalize(keepDir) : "";
+
+  try {
+    for (const entry of fs.readdirSync(installRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      if (
+        entry.name !== MANAGED_RUNTIME_DIR_PREFIX &&
+        !entry.name.startsWith(`${MANAGED_RUNTIME_DIR_PREFIX}-`)
+      ) {
+        continue;
+      }
+
+      const entryPath = path.join(installRoot, entry.name);
+
+      if (keepPath && path.normalize(entryPath) === keepPath) {
+        continue;
+      }
+
+      removePathForcefully(entryPath);
+    }
+  } catch {}
 }
 
 function removeManagedRuntimeDirs() {
@@ -693,27 +765,42 @@ async function prepareRuntime() {
   const BOOTSTRAP_TARGET = path.join(RUNTIME_APP_DIR, "compiled", "irefined-bootstrap.cjs");
   const MAIN_JS_TARGET = path.join(RUNTIME_APP_DIR, "compiled", "main.js");
   const PRELOAD_JS_TARGET = path.join(RUNTIME_APP_DIR, "compiled", "preload.js");
+  const SOURCE_FINGERPRINT = getManagedRuntimeFingerprint(OFFICIAL_PATHS);
+  const SHOULD_REBUILD_RUNTIME = !isManagedRuntimeReusable(
+    RUNTIME_PATHS,
+    SOURCE_FINGERPRINT
+  );
   ensurePath(OFFICIAL_UI_DIR, "Official iRacing UI directory");
   ensurePath(OFFICIAL_EXE_PATH, "Official iRacing UI executable");
   ensurePath(BOOTSTRAP_SOURCE, "Official runtime bootstrap source");
 
-  ensureDir(RUNTIME_UI_DIR);
-  copyDirectoryVerbatim(OFFICIAL_UI_DIR, RUNTIME_UI_DIR);
+  if (SHOULD_REBUILD_RUNTIME) {
+    removePathForcefully(RUNTIME_UI_DIR);
+    ensureDir(RUNTIME_UI_DIR);
+    copyDirectoryVerbatim(OFFICIAL_UI_DIR, RUNTIME_UI_DIR);
 
-  ensureDir(RUNTIME_RESOURCES_DIR);
+    ensureDir(RUNTIME_RESOURCES_DIR);
 
-  if (pathExists(RUNTIME_APP_ASAR) || pathExists(OFFICIAL_PATHS.asarPath)) {
-    if (pathExists(RUNTIME_APP_BACKUP_ASAR)) {
-      removePathForcefully(RUNTIME_APP_BACKUP_ASAR);
+    if (pathExists(RUNTIME_APP_ASAR) || pathExists(OFFICIAL_PATHS.asarPath)) {
+      if (pathExists(RUNTIME_APP_BACKUP_ASAR)) {
+        removePathForcefully(RUNTIME_APP_BACKUP_ASAR);
+      }
+
+      const sourceAsarPath = pathExists(RUNTIME_APP_ASAR)
+        ? RUNTIME_APP_ASAR
+        : OFFICIAL_PATHS.asarPath;
+      await copyFileWithRetries(sourceAsarPath, RUNTIME_APP_BACKUP_ASAR);
+      removePathForcefully(RUNTIME_APP_DIR);
+      asar.extractAll(RUNTIME_APP_BACKUP_ASAR, RUNTIME_APP_DIR);
+      removePathForcefully(RUNTIME_APP_ASAR);
     }
 
-    const sourceAsarPath = pathExists(RUNTIME_APP_ASAR)
-      ? RUNTIME_APP_ASAR
-      : OFFICIAL_PATHS.asarPath;
-    await copyFileWithRetries(sourceAsarPath, RUNTIME_APP_BACKUP_ASAR);
-    removePathForcefully(RUNTIME_APP_DIR);
-    asar.extractAll(RUNTIME_APP_BACKUP_ASAR, RUNTIME_APP_DIR);
-    removePathForcefully(RUNTIME_APP_ASAR);
+    writeManagedRuntimeMetadata(RUNTIME_PATHS, {
+      layoutVersion: MANAGED_RUNTIME_LAYOUT_VERSION,
+      sourceFingerprint: SOURCE_FINGERPRINT,
+      sourceUiDir: OFFICIAL_UI_DIR,
+      rebuiltAt: new Date().toISOString(),
+    });
   }
 
   ensurePath(
@@ -735,10 +822,13 @@ async function prepareRuntime() {
   return {
     officialUiDir: OFFICIAL_UI_DIR,
     officialExePath: OFFICIAL_EXE_PATH,
+    officialInstallRoot: OFFICIAL_PATHS.installRoot,
     runtimeDir: RUNTIME_UI_DIR,
     exePath: RUNTIME_PATHS.exePath,
     backupAsar: RUNTIME_APP_BACKUP_ASAR,
     patchedInPlace: false,
+    rebuilt: SHOULD_REBUILD_RUNTIME,
+    sourceFingerprint: SOURCE_FINGERPRINT,
   };
 }
 
